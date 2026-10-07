@@ -21,8 +21,9 @@ POST /api/servers/:serverId/channels/:channelId/messages
       ▼
 maybeHandleMusicCommand()                     ← src/lib/music-bot/manager.ts
       │  1. descobre, via LiveKit, em qual canal de voz o autor está
-      │  2. resolve o link no yt-dlp (título + duração)
+      │  2. resolve o link no yt-dlp: uma faixa (vídeo) ou a playlist inteira
       │  3. entra na sala como participante e publica uma faixa de áudio
+      │  4. toca as faixas da fila em sequência
       ▼
 yt-dlp  ──stdout──▶  ffmpeg  ──stdout (PCM s16le 48 kHz estéreo)──▶  AudioSource
                                                                         │
@@ -42,6 +43,8 @@ na call como qualquer outro participante.
   mostrar 🎤 na lista de participantes.
 - O áudio vai **direto do yt-dlp para o ffmpeg** (pipe), sem arquivo temporário em disco e
   sem esperar o download terminar antes de começar a tocar.
+- A playlist é apenas **listada** no `yt-dlp` (`--flat-playlist`, sem baixar mídia): só a
+  faixa que está tocando é que abre o fluxo de áudio.
 - O bot responde no chat como um usuário do servidor: na primeira interação ele cria
   sozinho o registro em `User` e a participação em `ServerMember` (cargo `member`).
 - Nenhuma alteração de schema no Prisma foi necessária.
@@ -69,7 +72,7 @@ Todos no **canal de texto**, sempre com `/`:
 
 | Comando | O que faz |
 |---|---|
-| `/play <link>` | entra no canal de voz de quem enviou e adiciona a música à fila |
+| `/play <link>` | entra no canal de voz de quem enviou e adiciona a música (ou a playlist toda) à fila |
 | `/pause` | pausa a música atual |
 | `/resume` | retoma a música pausada |
 | `/skip` | pula para a próxima da fila |
@@ -84,11 +87,24 @@ Todos no **canal de texto**, sempre com `/`:
   usar /play."*
 - Para controlar (`pause`/`resume`/`skip`/`stop`/`leave`/`queue`) é preciso estar **no mesmo
   canal de voz do bot**, para evitar sabotagem.
-- Links de playlist resolvem apenas o primeiro vídeo (`--no-playlist`).
-- Transmissões ao vivo são recusadas (não têm fim).
+- **Playlists entram inteiras.** Se o link apontar para uma playlist (ex:
+  `watch?v=...&list=...`, inclusive mixes/radio como `list=RDMM`), todas as faixas são
+  enfileiradas; se for um vídeo único, entra só ele.
+- A quantidade de faixas lidas de uma playlist é limitada por `MUSIC_BOT_MAX_PLAYLIST`, e o
+  que não couber na fila (`MUSIC_BOT_MAX_QUEUE`) é descartado — o bot informa os dois casos
+  na resposta.
+- Transmissões ao vivo são recusadas (não têm fim) — dentro de playlists elas são puladas.
 - Não há limite de duração por faixa.
 - Quando a fila termina, o bot sai sozinho após `MUSIC_BOT_IDLE_TIMEOUT_SECONDS`.
 - Falhas aparecem como mensagem do bot no próprio canal (ex: link inválido, yt-dlp ausente).
+
+**Exemplos de resposta:**
+
+```
+Tocando agora: AViVA - GRRRLS (3:49)
+Adicionada à fila (#2): Pitty - Teto de Vidro (3:47)
+Playlist "My Mix": 50 músicas adicionadas à fila. Lidas apenas as 50 primeiras faixas.
+```
 
 ---
 
@@ -107,6 +123,7 @@ Todas as variáveis têm valor padrão — **nenhuma é obrigatória** para ativ
 | `MUSIC_BOT_DISPLAY_NAME` | `DJ` | nome exibido na call e no chat |
 | `MUSIC_BOT_AVATAR_URL` | *(vazio)* | avatar público; vazio usa a inicial do nome |
 | `MUSIC_BOT_MAX_QUEUE` | `50` | máximo de faixas por canal (1–500, inclui a que toca) |
+| `MUSIC_BOT_MAX_PLAYLIST` | `50` | máximo de faixas lidas de um link de playlist (1–500) |
 | `MUSIC_BOT_IDLE_TIMEOUT_SECONDS` | `60` | tempo sem fila antes de sair do canal (5–3600) |
 
 O bot também depende das credenciais que já existem no `.env`:
@@ -262,7 +279,8 @@ escreve logs com `"name":"lk-rtc"` — útil para diferenciar falha de rede da f
 - O `@livekit/rtc-node` traz um addon nativo: o `node_modules` **não é portável** entre
   Windows e Linux, e `dispose()` do SDK não é chamado de propósito (o processo do servidor é
   de longa duração e continua podendo abrir novas sessões).
-- `/play` de playlist toca só o primeiro vídeo.
+- Playlists são limitadas a `MUSIC_BOT_MAX_PLAYLIST` faixas por comando (padrão 50); mixes
+  automáticos do YouTube como `list=RDMM` costumam ter mais de 100 faixas.
 - Não há busca por texto (só link), nem histórico de reprodução, nem volume por usuário.
 
 ---

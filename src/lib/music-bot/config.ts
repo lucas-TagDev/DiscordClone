@@ -22,6 +22,7 @@ export type MusicBotConfig = {
   avatarUrl: string | null;
   binaries: MusicBotBinaries;
   maxQueueSize: number;
+  maxPlaylistTracks: number;
   idleTimeoutMs: number;
 };
 
@@ -56,5 +57,6 @@ export const getMusicBotConfig = (): MusicBotConfig => ({
     ffmpegPath: readEnvString("FFMPEG_PATH", "ffmpeg"),
   },
   maxQueueSize: readEnvPositiveInt("MUSIC_BOT_MAX_QUEUE", 50, 1, 500),
+  maxPlaylistTracks: readEnvPositiveInt("MUSIC_BOT_MAX_PLAYLIST", 50, 1, 500),
   idleTimeoutMs: readEnvPositiveInt("MUSIC_BOT_IDLE_TIMEOUT_SECONDS", 60, 5, 3600) * 1000,
 });

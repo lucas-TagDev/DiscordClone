@@ -5,15 +5,23 @@ import { PCM_CHANNELS, PCM_SAMPLE_RATE, type MusicBotBinaries } from "@/lib/musi
 export class MediaError extends Error {}
 
 export type TrackMetadata = {
+  /** URL reproduzível pelo yt-dlp (uma faixa só, sem playlist acoplada). */
+  url: string;
   title: string;
   durationSeconds: number | null;
-  webpageUrl: string;
 };
 
-// `--no-playlist` evita que um link de playlist enfileire dezenas de faixas de uma
-// vez: o yt-dlp resolve apenas o primeiro vídeo do link.
-const YTDLP_COMMON_ARGS = ["--no-playlist", "--no-warnings", "--no-progress", "--socket-timeout", "20"];
+export type PlaylistResolution = {
+  /** Título da playlist quando o link é uma playlist; null para vídeo único. */
+  playlistTitle: string | null;
+  tracks: TrackMetadata[];
+  /** true quando a playlist tem mais faixas do que o limite consultado. */
+  truncated: boolean;
+};
+
+const YTDLP_COMMON_ARGS = ["--no-warnings", "--no-progress", "--socket-timeout", "20"];
 const STDERR_LIMIT = 4000;
+const UNTITLED = "Faixa sem título";
 
 export const isHttpUrl = (value: string): boolean => {
   try {
@@ -87,12 +95,37 @@ type YtDlpInfo = {
   title?: string;
   duration?: number;
   is_live?: boolean;
+  live_status?: string;
   webpage_url?: string;
+  url?: string;
+  id?: string;
+  ie_key?: string;
   entries?: YtDlpInfo[];
 };
 
-const readMetadata = (info: YtDlpInfo): TrackMetadata => {
-  if (info.is_live) {
+const isLiveEntry = (info: YtDlpInfo): boolean =>
+  info.is_live === true || info.live_status === "is_live";
+
+const readDuration = (value: number | undefined): number | null =>
+  typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(value) : null;
+
+/** O yt-dlp devolve a URL completa nas playlists, mas nem todo extractor faz isso. */
+const readEntryUrl = (entry: YtDlpInfo): string | null => {
+  for (const candidate of [entry.webpage_url, entry.url]) {
+    if (candidate && isHttpUrl(candidate)) {
+      return candidate;
+    }
+  }
+
+  if (entry.id && (entry.ie_key ?? "").toLowerCase().includes("youtube")) {
+    return `https://www.youtube.com/watch?v=${entry.id}`;
+  }
+
+  return null;
+};
+
+const readMetadata = (info: YtDlpInfo, fallbackUrl: string): TrackMetadata => {
+  if (isLiveEntry(info)) {
     throw new MediaError("Transmissões ao vivo não são suportadas.");
   }
 
@@ -101,29 +134,61 @@ const readMetadata = (info: YtDlpInfo): TrackMetadata => {
     throw new MediaError("Não consegui identificar o áudio desse link.");
   }
 
-  const duration =
-    typeof info.duration === "number" && Number.isFinite(info.duration) && info.duration > 0
-      ? Math.round(info.duration)
-      : null;
-
   return {
+    url: readEntryUrl(info) ?? fallbackUrl,
     title,
-    durationSeconds: duration,
-    webpageUrl: info.webpage_url?.trim() || "",
+    durationSeconds: readDuration(info.duration),
   };
 };
 
-export const resolveTrackMetadata = async (
+const readPlaylistEntries = (
+  entries: YtDlpInfo[],
+  maxTracks: number,
+): { tracks: TrackMetadata[]; truncated: boolean } => {
+  // Faixas ao vivo e entradas sem URL reproduzível são descartadas em silêncio.
+  const usable = entries.flatMap((entry) => {
+    if (!entry || isLiveEntry(entry)) {
+      return [];
+    }
+
+    const url = readEntryUrl(entry);
+    if (!url) {
+      return [];
+    }
+
+    return [
+      {
+        url,
+        title: entry.title?.trim() || UNTITLED,
+        durationSeconds: readDuration(entry.duration),
+      },
+    ];
+  });
+
+  return {
+    tracks: usable.slice(0, maxTracks),
+    truncated: usable.length > maxTracks,
+  };
+};
+
+/**
+ * Resolve o link em uma ou mais faixas. Um link com playlist (ex: `watch?v=...&list=...`)
+ * devolve todas as faixas dela, até `maxTracks`; um link de vídeo único devolve uma só.
+ */
+export const resolveTracks = async (
   url: string,
   binaries: MusicBotBinaries,
-): Promise<TrackMetadata> => {
+  options: { maxTracks: number },
+): Promise<PlaylistResolution> => {
   if (!isHttpUrl(url)) {
     throw new MediaError("Envie um link http(s) válido.");
   }
 
+  // Consulta leve: `--flat-playlist` traz título/duração de cada faixa sem baixar mídia.
+  // Um item a mais que o limite serve para saber se a playlist foi cortada.
   const stdout = await collectProcess(
     binaries.ytDlpPath,
-    [...YTDLP_COMMON_ARGS, "--dump-single-json", "-f", "bestaudio/best", url],
+    [...YTDLP_COMMON_ARGS, "--flat-playlist", "--playlist-end", String(options.maxTracks + 1), "--dump-single-json", url],
     "yt-dlp",
   );
 
@@ -134,16 +199,18 @@ export const resolveTrackMetadata = async (
     throw new MediaError("Não consegui interpretar a resposta do yt-dlp.");
   }
 
-  const firstEntry = Array.isArray(info.entries) ? info.entries.find(Boolean) : undefined;
-  if (info._type === "playlist" || firstEntry) {
-    if (!firstEntry) {
-      throw new MediaError("Esse link não contém nenhum áudio reproduzível.");
+  const entries = Array.isArray(info.entries) ? info.entries.filter(Boolean) : [];
+
+  if (entries.length > 0) {
+    const { tracks, truncated } = readPlaylistEntries(entries, options.maxTracks);
+    if (tracks.length === 0) {
+      throw new MediaError("Essa playlist não tem faixas reproduzíveis.");
     }
 
-    return readMetadata(firstEntry);
+    return { playlistTitle: info.title?.trim() || null, tracks, truncated };
   }
 
-  return readMetadata(info);
+  return { playlistTitle: null, tracks: [readMetadata(info, url)], truncated: false };
 };
 
 export type PcmStream = {
@@ -166,7 +233,8 @@ export const openPcmStream = (url: string, binaries: MusicBotBinaries): PcmStrea
 
   const ytDlp = spawn(
     binaries.ytDlpPath,
-    [...YTDLP_COMMON_ARGS, "-f", "bestaudio/best", "-o", "-", url],
+    // `--no-playlist` garante que o processo de streaming toque somente esta faixa.
+    [...YTDLP_COMMON_ARGS, "--no-playlist", "-f", "bestaudio/best", "-o", "-", url],
     { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] },
   );
   const ffmpeg = spawn(

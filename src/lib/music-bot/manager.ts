@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { db } from "@/lib/db";
 import { NO_PASSWORD_HASH, getServerForUser } from "@/lib/store";
 import { getMusicBotConfig, type MusicBotConfig } from "@/lib/music-bot/config";
-import { isHttpUrl, resolveTrackMetadata } from "@/lib/music-bot/media";
-import type { MusicPlayer, MusicPlayerSnapshot, MusicQueueItem } from "@/lib/music-bot/player";
+import { isHttpUrl, resolveTracks } from "@/lib/music-bot/media";
+import type { MusicPlayer, MusicPlayerSnapshot } from "@/lib/music-bot/player";
 
 export type MusicCommandContext = {
   serverId: string;
@@ -290,37 +290,61 @@ const handlePlay = async (
   }
 
   // Resolve o link antes de entrar na call: um link inválido não deve arrastar o bot.
-  const metadata = await resolveTrackMetadata(argument, config.binaries);
+  const resolution = await resolveTracks(argument, config.binaries, {
+    maxTracks: config.maxPlaylistTracks,
+  });
 
   const player = await getOrCreatePlayer(context.serverId, userChannelId, config, (content) =>
     postBotMessage(context.serverId, context.channelId, config, content),
   );
 
-  if (player.queueSize() >= config.maxQueueSize) {
+  const capacity = config.maxQueueSize - player.queueSize();
+  if (capacity <= 0) {
     await reply(`A fila está cheia (${config.maxQueueSize} músicas). Aguarde ou use /skip.`);
     return;
   }
 
-  const item: MusicQueueItem = {
-    id: randomUUID(),
-    url: argument,
-    title: metadata.title,
-    durationSeconds: metadata.durationSeconds,
-    requestedBy: context.userId,
-    requestedByName: context.userName,
-  };
-
+  const accepted = resolution.tracks.slice(0, capacity);
+  const turnedAway = resolution.tracks.length - accepted.length;
   const wasIdle = !player.hasWork();
-  player.enqueue(item);
 
-  if (wasIdle) {
-    await reply(`Tocando agora: ${item.title}${formatDuration(item.durationSeconds)}`);
+  accepted.forEach((track) => {
+    player.enqueue({
+      id: randomUUID(),
+      url: track.url,
+      title: track.title,
+      durationSeconds: track.durationSeconds,
+      requestedBy: context.userId,
+      requestedByName: context.userName,
+    });
+  });
+
+  if (resolution.tracks.length === 1) {
+    const item = accepted[0];
+
+    if (wasIdle) {
+      await reply(`Tocando agora: ${item.title}${formatDuration(item.durationSeconds)}`);
+      return;
+    }
+
+    await reply(
+      `Adicionada à fila (#${player.pendingCount()}): ${item.title}${formatDuration(item.durationSeconds)}`,
+    );
     return;
   }
 
-  await reply(
-    `Adicionada à fila (#${player.pendingCount()}): ${item.title}${formatDuration(item.durationSeconds)}`,
-  );
+  const label = resolution.playlistTitle ? `Playlist "${resolution.playlistTitle}"` : "Playlist";
+  const parts = [`${label}: ${accepted.length} músicas adicionadas à fila.`];
+
+  if (turnedAway > 0) {
+    parts.push(`${turnedAway} não couberam (limite de ${config.maxQueueSize} na fila).`);
+  }
+
+  if (resolution.truncated) {
+    parts.push(`Lidas apenas as ${config.maxPlaylistTracks} primeiras faixas.`);
+  }
+
+  await reply(parts.join(" "));
 };
 
 const handleControl = async (
