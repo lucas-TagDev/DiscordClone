@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./public/logo.png" alt="TwinSLKit" width="320" />
+  <img src="logo.png" alt="TwinSLKit" width="320" />
 </p>
 
 <h1 align="center">TwinSLKit v2 - Clone Discord</h1>
