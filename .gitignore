@@ -1,0 +1,37 @@
+# Dependências — o servidor reinstala com `npm ci`
+node_modules/
+
+# Build do Next (recompilado no servidor)
+.next/
+out/
+
+# Segredos. O `.env.example` continua versionado de propósito.
+.env*
+!.env.example
+
+# Arquivos gravados em runtime pelos uploads (anexos, avatares, emojis,
+# soundboard, banners). São dados de usuário, não código.
+public/uploads/
+public/server-avatars/
+
+# WASM do RNNoise: recriado pelo `postinstall` (scripts/setup-rnnoise.cjs)
+public/wasm/
+
+# App desktop: instaladores e build do addon nativo
+LinuxDesktop/dist/
+LinuxDesktop/native/build/
+
+# Banco: dump e banco local de dev (o schema fica em prisma/schema.prisma)
+twinslkit_backup.sql
+prisma/prisma/
+*.db
+*.db-journal
+
+# Cache do TypeScript
+*.tsbuildinfo
+
+# Logs e lixo de SO
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db

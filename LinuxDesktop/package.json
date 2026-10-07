@@ -1,0 +1,75 @@
+{
+  "name": "partiuchat",
+  "version": "1.0.3",
+  "description": "PartiuChat - Discord Clone Desktop",
+  "main": "main.js",
+  "author": "PartiuChat",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "build:native": "node ./node_modules/node-gyp/bin/node-gyp.js rebuild --directory=native",
+    "prebuild:win": "npm run build:native",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
+    "build:linux": "electron-builder --linux"
+  },
+  "build": {
+    "appId": "com.partiuchat.desktop",
+    "productName": "PartiuChat",
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "assets/icon.ico",
+      "extraResources": [
+        {
+          "from": "native/build/Release/process_audio_capture.node",
+          "to": "native/process_audio_capture.node"
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeaderIcon": "assets/icon.ico",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "PartiuChat"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "assets/icon.icns"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "assets/icon.png"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "splash.html",
+      "assets/**/*"
+    ],
+    "publish": {
+      "provider": "generic",
+      "url": "https://partiuchat.lacgamesbr.com/updates/"
+    }
+  },
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.0"
+  }
+}

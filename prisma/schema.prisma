@@ -1,0 +1,485 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ChannelType {
+  text
+  voice
+}
+
+enum MemberRole {
+  admin
+  moderator
+  member
+}
+
+enum RestrictionType {
+  server_ban
+  voice_timeout
+}
+
+enum VoiceActionType {
+  kick
+  move
+}
+
+enum DirectFriendRequestStatus {
+  pending
+  accepted
+  rejected
+}
+
+enum AuditLogAction {
+  member_kicked
+  member_banned
+  member_unbanned
+  member_role_updated
+  member_permissions_updated
+  member_voice_kicked
+  member_voice_moved
+  member_voice_timeout
+  channel_created
+  channel_updated
+  channel_deleted
+  category_created
+  category_updated
+  category_deleted
+  message_deleted
+  invite_created
+  invite_deleted
+  server_updated
+}
+
+model User {
+  id           String         @id
+  username     String?        @unique
+  displayName  String
+  displayNameStyle String? @default("{}")
+  avatarUrl    String?
+  passwordHash String
+  isAdmin      Boolean        @default(false)
+  joinWithMicEnabled Boolean @default(true)
+  joinWithCameraEnabled Boolean @default(false)
+  noiseSuppressionEnabled Boolean @default(true)
+  chatNotificationSoundEnabled Boolean @default(true)
+  micGain      Int            @default(100)
+  keybinds     String         @default("{}")
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  ownedServers Server[]       @relation("ServerOwner")
+  memberships  ServerMember[]
+  messages     Message[]
+  createdRestrictions ServerRestriction[] @relation("RestrictionActor")
+  restrictions ServerRestriction[]
+  createdVoiceActions ServerVoiceAction[] @relation("VoiceActionActor")
+  voiceActions ServerVoiceAction[]
+  createdInvites ServerInvite[] @relation("InviteCreator")
+  createdSounds ServerSound[] @relation("SoundCreator")
+  createdStickers ServerSticker[] @relation("StickerCreator")
+  createdEmojis ServerEmoji[] @relation("EmojiCreator")
+  favoriteSounds ServerSoundFavorite[]
+  directConversationsA DirectConversation[] @relation("DirectConversationA")
+  directConversationsB DirectConversation[] @relation("DirectConversationB")
+  directMessagesSent DirectMessage[] @relation("DirectMessageSender")
+  messageReactions MessageReaction[]
+  directMessageReactions DirectMessageReaction[]
+  directFriends DirectFriend[] @relation("DirectFriendOwner")
+  friendOfUsers DirectFriend[] @relation("DirectFriendTarget")
+  sentDirectFriendRequests DirectFriendRequest[] @relation("DirectFriendRequestSender")
+  receivedDirectFriendRequests DirectFriendRequest[] @relation("DirectFriendRequestReceiver")
+  directBlockedUsers DirectBlock[] @relation("DirectBlockBlocker")
+  directBlockedByUsers DirectBlock[] @relation("DirectBlockTarget")
+  auditLogsCreated ServerAuditLog[] @relation("AuditLogActor")
+  soundPlaybacks ServerSoundPlayback[]
+}
+
+model DirectFriend {
+  userId       String
+  friendUserId String
+  createdAt    DateTime @default(now())
+
+  user         User @relation("DirectFriendOwner", fields: [userId], references: [id], onDelete: Cascade)
+  friend       User @relation("DirectFriendTarget", fields: [friendUserId], references: [id], onDelete: Cascade)
+
+  @@id([userId, friendUserId])
+  @@index([userId, createdAt])
+  @@index([friendUserId, createdAt])
+}
+
+model DirectFriendRequest {
+  id          String                    @id @default(cuid())
+  requesterId String
+  receiverId  String
+  status      DirectFriendRequestStatus @default(pending)
+  createdAt   DateTime                  @default(now())
+  respondedAt DateTime?
+
+  requester   User @relation("DirectFriendRequestSender", fields: [requesterId], references: [id], onDelete: Cascade)
+  receiver    User @relation("DirectFriendRequestReceiver", fields: [receiverId], references: [id], onDelete: Cascade)
+
+  @@index([requesterId, status, createdAt])
+  @@index([receiverId, status, createdAt])
+}
+
+model DirectBlock {
+  blockerId    String
+  targetUserId String
+  createdAt    DateTime @default(now())
+
+  blocker      User @relation("DirectBlockBlocker", fields: [blockerId], references: [id], onDelete: Cascade)
+  targetUser   User @relation("DirectBlockTarget", fields: [targetUserId], references: [id], onDelete: Cascade)
+
+  @@id([blockerId, targetUserId])
+  @@index([blockerId, createdAt])
+  @@index([targetUserId, createdAt])
+}
+
+model DirectConversation {
+  id             String   @id @default(cuid())
+  participantAId String
+  participantBId String
+  lastReadAtA    DateTime?
+  lastReadAtB    DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  participantA   User     @relation("DirectConversationA", fields: [participantAId], references: [id], onDelete: Cascade)
+  participantB   User     @relation("DirectConversationB", fields: [participantBId], references: [id], onDelete: Cascade)
+  messages       DirectMessage[]
+
+  @@unique([participantAId, participantBId])
+  @@index([participantAId, updatedAt])
+  @@index([participantBId, updatedAt])
+}
+
+model DirectMessage {
+  id             String   @id @default(cuid())
+  conversationId String
+  senderId       String
+  content        String
+  createdAt      DateTime @default(now())
+
+  conversation   DirectConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender         User               @relation("DirectMessageSender", fields: [senderId], references: [id], onDelete: Cascade)
+  reactions      DirectMessageReaction[]
+
+  @@index([conversationId, createdAt])
+  @@index([senderId, createdAt])
+}
+
+model DirectMessageReaction {
+  id        String        @id @default(cuid())
+  messageId String
+  userId    String
+  emoji     String
+  createdAt DateTime      @default(now())
+
+  message   DirectMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId, emoji])
+  @@index([messageId])
+}
+
+model Server {
+  id        String         @id @default(cuid())
+  name      String
+  avatarUrl String?
+  serverBannerUrl String?
+  ownerId   String
+  virusTotalEnabled Boolean @default(false)
+  virusTotalApiKey String?
+  allowMemberInvites Boolean @default(false)
+  allowModeratorInvites Boolean @default(false)
+  allowMemberSoundUpload Boolean @default(true)
+  allowModeratorSoundUpload Boolean @default(true)
+  allowCrossServerSoundShare Boolean @default(false)
+  allowMemberDeleteSounds Boolean @default(false)
+  allowModeratorDeleteSounds Boolean @default(true)
+  allowMemberStickerCreate Boolean @default(false)
+  allowModeratorStickerCreate Boolean @default(true)
+  allowMemberEmojiCreate Boolean @default(false)
+  allowModeratorEmojiCreate Boolean @default(true)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  owner     User           @relation("ServerOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  categories ChannelCategory[]
+  channels  Channel[]
+  members   ServerMember[]
+  messages  Message[]
+  restrictions ServerRestriction[]
+  voiceActions ServerVoiceAction[]
+  invites   ServerInvite[]
+  sounds    ServerSound[]
+  soundPlaybacks ServerSoundPlayback[]
+  stickers  ServerSticker[]
+  emojis    ServerEmoji[]
+  auditLogs ServerAuditLog[]
+}
+
+model ServerSticker {
+  id          String   @id @default(cuid())
+  serverId    String
+  createdById String
+  name        String
+  url         String
+  mimeType    String
+  size        Int
+  createdAt   DateTime @default(now())
+
+  server      Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  createdBy   User     @relation("StickerCreator", fields: [createdById], references: [id], onDelete: Cascade)
+
+  @@index([serverId, createdAt])
+  @@index([createdById, createdAt])
+}
+
+model ServerEmoji {
+  id          String   @id @default(cuid())
+  serverId    String
+  createdById String
+  name        String
+  url         String
+  mimeType    String
+  size        Int
+  createdAt   DateTime @default(now())
+
+  server      Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  createdBy   User     @relation("EmojiCreator", fields: [createdById], references: [id], onDelete: Cascade)
+
+  @@index([serverId, createdAt])
+  @@index([createdById, createdAt])
+}
+
+model ServerSound {
+  id          String   @id @default(cuid())
+  serverId    String
+  createdById String
+  name        String
+  url         String
+  mimeType    String
+  size        Int
+  durationSeconds Float
+  gifUrl      String?
+  createdAt   DateTime @default(now())
+
+  server      Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  createdBy   User     @relation("SoundCreator", fields: [createdById], references: [id], onDelete: Cascade)
+  favoritedBy ServerSoundFavorite[]
+  playbacks   ServerSoundPlayback[]
+
+  @@index([serverId, createdAt])
+  @@index([createdById])
+}
+
+model ServerSoundFavorite {
+  userId    String
+  soundId   String
+  createdAt DateTime @default(now())
+
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sound     ServerSound @relation(fields: [soundId], references: [id], onDelete: Cascade)
+
+  @@id([userId, soundId])
+  @@index([soundId])
+  @@index([userId, createdAt])
+}
+
+model ServerSoundPlayback {
+  id        String   @id @default(cuid())
+  soundId   String
+  userId    String
+  serverId  String
+  playedAt  DateTime @default(now())
+
+  sound     ServerSound @relation(fields: [soundId], references: [id], onDelete: Cascade)
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  server    Server      @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  @@index([soundId, playedAt])
+  @@index([userId, playedAt])
+  @@index([serverId, playedAt])
+  @@index([soundId, userId, playedAt])
+}
+
+model ServerInvite {
+  id          String   @id @default(cuid())
+  serverId    String
+  createdById String
+  code        String   @unique
+  createdAt   DateTime @default(now())
+  revokedAt   DateTime?
+
+  server      Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  createdBy   User     @relation("InviteCreator", fields: [createdById], references: [id], onDelete: Cascade)
+
+  @@index([serverId, revokedAt, createdAt])
+}
+
+model ChannelCategory {
+  id        String   @id @default(cuid())
+  serverId  String
+  name      String
+  createdAt DateTime @default(now())
+
+  server    Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  channels  Channel[]
+
+  @@index([serverId])
+}
+
+model ServerMember {
+  serverId String
+  userId   String
+  role     MemberRole
+  canRemoveMembers Boolean @default(false)
+  canBanUsers      Boolean @default(false)
+  canTimeoutVoice  Boolean @default(false)
+  canDeleteUserMessages Boolean @default(false)
+  canKickFromVoice Boolean @default(false)
+  canMoveVoiceUsers Boolean @default(false)
+  canManageInvites Boolean @default(false)
+  notifySoundEnabled Boolean @default(true)
+  createdAt DateTime      @default(now())
+
+  server   Server         @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  user     User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([serverId, userId])
+  @@index([userId])
+}
+
+model ServerRestriction {
+  id        String          @id @default(cuid())
+  serverId  String
+  userId    String
+  actorId   String
+  type      RestrictionType
+  reason    String?
+  expiresAt DateTime?
+  revokedAt DateTime?
+  createdAt DateTime        @default(now())
+
+  server    Server          @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  actor     User            @relation("RestrictionActor", fields: [actorId], references: [id], onDelete: Cascade)
+
+  @@index([serverId, userId, type, createdAt])
+  @@index([userId, type, createdAt])
+}
+
+model ServerVoiceAction {
+  id             String        @id @default(cuid())
+  serverId       String
+  userId         String
+  actorId        String
+  type           VoiceActionType
+  targetChannelId String?
+  reason         String?
+  handledAt      DateTime?
+  createdAt      DateTime      @default(now())
+
+  server         Server        @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  actor          User          @relation("VoiceActionActor", fields: [actorId], references: [id], onDelete: Cascade)
+
+  @@index([serverId, userId, handledAt, createdAt])
+}
+
+model Channel {
+  id        String       @id @default(cuid())
+  serverId  String
+  categoryId String?
+  name      String
+  type      ChannelType
+  allowMemberView Boolean @default(true)
+  allowModeratorView Boolean @default(true)
+  allowMemberAccess Boolean @default(true)
+  allowModeratorAccess Boolean @default(true)
+  allowMemberSendMessages Boolean @default(true)
+  allowModeratorSendMessages Boolean @default(true)
+  allowMemberSendFiles Boolean @default(true)
+  allowModeratorSendFiles Boolean @default(true)
+  allowMemberSendLinks Boolean @default(true)
+  allowModeratorSendLinks Boolean @default(true)
+  allowMemberDeleteMessages Boolean @default(true)
+  allowModeratorDeleteMessages Boolean @default(true)
+  createdAt DateTime     @default(now())
+
+  server    Server       @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  category  ChannelCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  messages  Message[]
+
+  @@index([serverId])
+  @@index([categoryId])
+}
+
+model Message {
+  id        String    @id @default(cuid())
+  serverId  String
+  channelId String
+  userId    String
+  userName  String
+  content   String
+  createdAt DateTime  @default(now())
+
+  server    Server    @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  channel   Channel   @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  attachments MessageAttachment[]
+  reactions MessageReaction[]
+
+  @@index([serverId, channelId, createdAt])
+}
+
+model MessageReaction {
+  id        String   @id @default(cuid())
+  messageId String
+  userId    String
+  emoji     String
+  createdAt DateTime @default(now())
+
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId, emoji])
+  @@index([messageId])
+}
+
+model MessageAttachment {
+  id        String   @id @default(cuid())
+  messageId String
+  name      String
+  url       String
+  mimeType  String
+  size      Int
+  createdAt DateTime @default(now())
+
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
+}
+
+model ServerAuditLog {
+  id          String         @id @default(cuid())
+  serverId    String
+  actorId     String
+  action      AuditLogAction
+  targetId    String?
+  targetName  String?
+  details     String?
+  createdAt   DateTime       @default(now())
+
+  server      Server         @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  actor       User           @relation("AuditLogActor", fields: [actorId], references: [id], onDelete: Cascade)
+
+  @@index([serverId, createdAt(sort: Desc)])
+  @@index([actorId, createdAt])
+}
