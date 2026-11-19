@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { mkdir, writeFile, readdir, unlink, stat, rename } from "node:fs/promises";
+import { getSafeUploadExtension } from "@/lib/upload-safety";
+import { mkdir, writeFile, readdir, unlink, stat, rename, rm } from "node:fs/promises";
 import { createWriteStream, createReadStream } from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { requireAuthenticatedUserId } from "@/lib/api-auth";
 
 const getMaxFileSizeBytes = (): number => {
@@ -15,6 +16,7 @@ const getMaxFileSizeBytes = (): number => {
 };
 
 const MAX_FILE_SIZE = getMaxFileSizeBytes();
+const MAX_TOTAL_CHUNKS = 2000;
 
 const sanitizeFileName = (name: string): string =>
   name
@@ -37,7 +39,7 @@ const sanitizeFileName = (name: string): string =>
 
 export async function POST(request: NextRequest) {
   try {
-    requireAuthenticatedUserId(request);
+    const authenticatedUserId = requireAuthenticatedUserId(request);
 
     const subDir = request.nextUrl.searchParams.get("dir") === "direct" ? "direct" : "channels";
     const uploadId = request.nextUrl.searchParams.get("uploadId");
@@ -51,7 +53,14 @@ export async function POST(request: NextRequest) {
       const totalChunks = Number(totalChunksParam);
       const fileName = decodeURIComponent(filenameParam || "arquivo");
 
-      if (!Number.isInteger(chunk) || !Number.isInteger(totalChunks) || chunk < 0 || totalChunks <= 0 || chunk >= totalChunks) {
+      if (
+        !Number.isInteger(chunk) ||
+        !Number.isInteger(totalChunks) ||
+        chunk < 0 ||
+        totalChunks <= 0 ||
+        totalChunks > MAX_TOTAL_CHUNKS ||
+        chunk >= totalChunks
+      ) {
         return NextResponse.json({ error: "Parâmetros de chunk inválidos." }, { status: 400 });
       }
 
@@ -60,7 +69,9 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: "uploadId inválido." }, { status: 400 });
       }
 
-      const tempDir = path.join(process.cwd(), "public", "uploads", ".tmp", uploadId);
+      // A pasta temporária fica presa ao usuário: ninguém injeta partes no upload de outra pessoa.
+      const ownerKey = createHash("sha256").update(authenticatedUserId).digest("hex").slice(0, 16);
+      const tempDir = path.join(process.cwd(), "public", "uploads", ".tmp", `${ownerKey}-${uploadId}`);
       await mkdir(tempDir, { recursive: true });
 
       const body = request.body;
@@ -73,12 +84,19 @@ export async function POST(request: NextRequest) {
       const writer = createWriteStream(chunkPath);
       const reader = body.getReader();
       let chunkSize = 0;
+      let chunkTooLarge = false;
 
       try {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
           chunkSize += value.byteLength;
+          // Uma parte sozinha nunca pode passar do limite do arquivo inteiro (evita encher o disco)
+          if (chunkSize > MAX_FILE_SIZE) {
+            chunkTooLarge = true;
+            await reader.cancel().catch(() => {});
+            break;
+          }
           const ok = writer.write(Buffer.from(value));
           if (!ok) {
             await new Promise<void>((resolve) => writer.once("drain", resolve));
@@ -92,6 +110,12 @@ export async function POST(request: NextRequest) {
         writer.on("finish", resolve);
         writer.on("error", reject);
       });
+
+      if (chunkTooLarge) {
+        await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+        const limitMb = (MAX_FILE_SIZE / (1024 * 1024)).toFixed(0);
+        return NextResponse.json({ error: `Arquivo excede o limite de ${limitMb}MB.` }, { status: 413 });
+      }
 
       // Check if all chunks have arrived
       const chunkFiles = (await readdir(tempDir)).filter((f) => f.startsWith("chunk-")).sort();
@@ -113,7 +137,7 @@ export async function POST(request: NextRequest) {
       const extension = path.extname(fileName);
       const baseName = path.basename(fileName, extension);
       const safeBaseName = sanitizeFileName(baseName);
-      const finalFileName = `${Date.now()}-${randomUUID()}-${safeBaseName}${extension}`;
+      const finalFileName = `${Date.now()}-${randomUUID()}-${safeBaseName}${getSafeUploadExtension(extension)}`;
       const finalPath = path.join(uploadsDir, finalFileName);
 
       const finalWriter = createWriteStream(finalPath);
@@ -181,7 +205,7 @@ export async function POST(request: NextRequest) {
     const extension = path.extname(fileName);
     const baseName = path.basename(fileName, extension);
     const safeBaseName = sanitizeFileName(baseName);
-    const finalFileName = `${Date.now()}-${randomUUID()}-${safeBaseName}${extension}`;
+    const finalFileName = `${Date.now()}-${randomUUID()}-${safeBaseName}${getSafeUploadExtension(extension)}`;
     const finalPath = path.join(uploadsDir, finalFileName);
 
     const body = request.body;

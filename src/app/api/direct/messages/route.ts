@@ -5,7 +5,7 @@ import { createDirectMessage, listDirectMessagesPage } from "@/lib/store";
 import { parseMultipartFormData, saveParsedFile } from "@/lib/parse-multipart";
 
 // Limites configuráveis via .env
-const MAX_MESSAGE_LENGTH = Number(process.env.NEXT_PUBLIC_MAX_MESSAGE_LENGTH ?? "2000");
+const MAX_MESSAGE_LENGTH = 50_000;
 const getMaxFileSizeBytes = (): number => {
   const rawValue = process.env.CHANNEL_UPLOAD_MAX_FILE_SIZE_MB ?? process.env.NEXT_PUBLIC_CHANNEL_UPLOAD_MAX_FILE_SIZE_MB;
   const parsedMb = Number(rawValue);

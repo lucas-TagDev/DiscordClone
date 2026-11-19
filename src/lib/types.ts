@@ -23,6 +23,8 @@ export type ServerMember = {
   createdAt?: string;
   userName?: string;
   avatarUrl?: string | null;
+  /** Última vez que o usuário fez alguma requisição autenticada (ISO). */
+  lastSeenAt?: string | null;
   permissions?: ModeratorPermissions;
   notifySoundEnabled?: boolean;
 };
@@ -76,6 +78,7 @@ export type Channel = {
 };
 
 export type ChannelCategory = {
+  position?: number;
   id: string;
   name: string;
 };

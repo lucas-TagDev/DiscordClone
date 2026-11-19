@@ -1,8 +1,44 @@
 @import "tailwindcss";
 
+/* ─────────────────────────────────────────────────────────────
+   Tema "Neon Roxo" — todos os componentes usam estes tokens.
+   Para ajustar a paleta, altere apenas os valores abaixo.
+   ───────────────────────────────────────────────────────────── */
 :root {
-  --background: #313338;
-  --foreground: #dbdee1;
+  /* Fundos (do mais escuro ao mais claro) */
+  --tk-bg-deepest: #07051a;
+  --tk-bg-deep: #0b0820;
+  --tk-bg-main: #0e0a24;
+  --tk-bg-panel: #130e2e;
+  --tk-bg-hover: #1d1640;
+  --tk-bg-elev: #1a1438;
+  --tk-bg-active: #2a1f57;
+
+  /* Linhas e bordas */
+  --tk-line: #1e1742;
+  --tk-border: #2d2360;
+  --tk-border-strong: #3d3080;
+
+  /* Destaque (roxo neon) */
+  --tk-accent: #8b5cf6;
+  --tk-accent-hover: #7c3aed;
+  --tk-accent-soft: #a78bfa;
+  --tk-accent-glow: rgba(168, 85, 247, 0.55);
+  --tk-accent-grad: linear-gradient(135deg, #a855f7 0%, #7c3aed 55%, #5b21b6 100%);
+
+  /* Texto */
+  --tk-text-strong: #f7f4ff;
+  --tk-text: #ece8ff;
+  --tk-text-soft: #d3cbf2;
+  --tk-text-muted: #bdb4e0;
+  --tk-text-subtle: #9a91c2;
+  --tk-text-faint: #756c9e;
+
+  /* Status */
+  --tk-green: #3ee07a;
+
+  --background: var(--tk-bg-main);
+  --foreground: var(--tk-text);
 }
 
 @theme inline {
@@ -12,42 +48,320 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #313338;
-    --foreground: #dbdee1;
-  }
+/* Cinzas e índigo do Tailwind puxados para o roxo, para combinar com o tema */
+@theme {
+  --color-zinc-50: #f8f6ff;
+  --color-zinc-100: #efebfc;
+  --color-zinc-200: #ddd7f3;
+  --color-zinc-300: #c2b9e2;
+  --color-zinc-400: #988eba;
+  --color-zinc-500: #71689a;
+  --color-zinc-600: #51487a;
+  --color-zinc-700: #362d5e;
+  --color-zinc-800: #231b45;
+  --color-zinc-900: #150f30;
+  --color-zinc-950: #0b0820;
+
+  --color-indigo-300: #c4b5fd;
+  --color-indigo-400: #a78bfa;
+  --color-indigo-500: #8b5cf6;
+  --color-indigo-600: #7c3aed;
+  --color-indigo-700: #6d28d9;
 }
 
 body {
-  background: var(--background);
+  background-color: var(--tk-bg-deepest);
+  background-image:
+    radial-gradient(1200px 600px at 0% 0%, rgba(124, 58, 237, 0.22), transparent 60%),
+    radial-gradient(900px 500px at 100% 100%, rgba(168, 85, 247, 0.16), transparent 60%);
+  background-attachment: fixed;
   color: var(--foreground);
-  font-family: var(--font-geist-sans), "gg sans", "Noto Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-family: var(--font-geist-sans), "Poppins", "Noto Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
 }
 
-/* Discord-style scrollbar */
+/* Scrollbar roxa */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #2B2D31;
+  background: transparent;
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #1A1B1E;
+  background: var(--tk-border);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #141517;
+  background: var(--tk-border-strong);
 }
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: #1A1B1E #2B2D31;
+  scrollbar-color: var(--tk-border) transparent;
+}
+
+/* ── Painéis principais ───────────────────────────────────── */
+.neon-rail {
+  background: linear-gradient(180deg, rgba(10, 7, 28, 0.96), rgba(7, 5, 22, 0.98));
+  border-right: 1px solid rgba(139, 92, 246, 0.14);
+}
+
+.neon-sidebar {
+  background:
+    radial-gradient(420px 260px at 100% 0%, rgba(168, 85, 247, 0.18), transparent 70%),
+    linear-gradient(180deg, rgba(20, 14, 46, 0.92), rgba(12, 9, 32, 0.96));
+  border-right: 1px solid rgba(139, 92, 246, 0.22);
+  box-shadow: 1px 0 24px rgba(124, 58, 237, 0.08);
+}
+
+.neon-main {
+  background:
+    radial-gradient(900px 420px at 50% -10%, rgba(124, 58, 237, 0.14), transparent 70%),
+    linear-gradient(180deg, rgba(14, 10, 36, 0.9), rgba(9, 7, 26, 0.95));
+}
+
+.neon-members {
+  background: linear-gradient(180deg, rgba(20, 14, 46, 0.92), rgba(12, 9, 32, 0.96));
+  border-left: 1px solid rgba(139, 92, 246, 0.22);
+}
+
+/* Cabeçalho com degradê de texto */
+.neon-title {
+  background: linear-gradient(90deg, #ffffff 0%, #e9d5ff 45%, #c084fc 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Rótulos de categoria (ex.: CANAIS DE TEXTO) */
+.neon-section-label {
+  color: var(--tk-accent-soft);
+  letter-spacing: 0.04em;
+}
+
+/* Item de canal selecionado — pílula roxa brilhante */
+.neon-active {
+  background: var(--tk-accent-grad);
+  color: #fff;
+  box-shadow: 0 0 0 1px rgba(196, 181, 253, 0.35) inset, 0 4px 18px var(--tk-accent-glow);
+}
+
+.neon-item {
+  transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.neon-item:hover {
+  box-shadow: 0 0 0 1px rgba(139, 92, 246, 0.25) inset;
+}
+
+/* Selo "AO VIVO" */
+.neon-live {
+  color: var(--tk-green);
+  text-shadow: 0 0 8px rgba(62, 224, 122, 0.65);
+  letter-spacing: 0.02em;
+}
+
+/* Barras de sinal animadas ao lado do "AO VIVO" */
+.neon-signal {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 12px;
+}
+
+.neon-signal > i {
+  display: block;
+  width: 3px;
+  border-radius: 1px;
+  background: var(--tk-green);
+  box-shadow: 0 0 6px rgba(62, 224, 122, 0.7);
+  animation: neon-signal 1.2s ease-in-out infinite;
+}
+
+.neon-signal > i:nth-child(1) { height: 40%; animation-delay: 0s; }
+.neon-signal > i:nth-child(2) { height: 65%; animation-delay: 0.15s; }
+.neon-signal > i:nth-child(3) { height: 85%; animation-delay: 0.3s; }
+.neon-signal > i:nth-child(4) { height: 100%; animation-delay: 0.45s; }
+
+@keyframes neon-signal {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+/* Moldura neon da área de transmissão */
+.neon-frame {
+  border: 1.5px solid rgba(192, 132, 252, 0.85);
+  border-radius: 18px;
+  box-shadow:
+    0 0 0 1px rgba(168, 85, 247, 0.25),
+    0 0 28px rgba(168, 85, 247, 0.45),
+    inset 0 0 24px rgba(124, 58, 237, 0.15);
+}
+
+/* Cartões de participante (somente áudio) */
+.neon-card {
+  background: linear-gradient(180deg, rgba(36, 27, 76, 0.75), rgba(20, 14, 46, 0.85));
+  border: 1px solid rgba(139, 92, 246, 0.22);
+  border-radius: 14px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.neon-card:hover {
+  border-color: rgba(168, 85, 247, 0.5);
+}
+
+.neon-card[data-speaking="true"] {
+  border-color: var(--tk-green);
+  box-shadow: 0 0 0 1px rgba(62, 224, 122, 0.45), 0 0 18px rgba(62, 224, 122, 0.35);
+}
+
+/* Barra de controles da sala de voz */
+.neon-controlbar {
+  background: linear-gradient(180deg, rgba(14, 10, 36, 0.4), rgba(9, 7, 26, 0.9));
+  border-top: 1px solid rgba(139, 92, 246, 0.18);
+}
+
+.neon-btn {
+  width: 3rem !important;
+  height: 3rem !important;
+  border-radius: 9999px !important;
+  background: rgba(36, 27, 76, 0.85) !important;
+  color: var(--tk-text-muted) !important;
+  border: 1px solid rgba(139, 92, 246, 0.22) !important;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.neon-btn:hover {
+  color: #fff !important;
+  background: rgba(54, 40, 110, 0.95) !important;
+  box-shadow: 0 0 14px rgba(168, 85, 247, 0.35);
+}
+
+.neon-btn[data-active="true"] {
+  background: var(--tk-accent-grad) !important;
+  color: #fff !important;
+  border-color: rgba(216, 180, 254, 0.55) !important;
+  box-shadow: 0 0 20px var(--tk-accent-glow);
+}
+
+.neon-btn-danger {
+  width: 3.5rem !important;
+  height: 3.5rem !important;
+  border-radius: 9999px !important;
+  background: linear-gradient(135deg, #ff4d6d, #e11d48) !important;
+  color: #fff !important;
+  box-shadow: 0 0 22px rgba(244, 63, 94, 0.5);
+}
+
+.neon-btn-danger:hover {
+  filter: brightness(1.1);
+}
+
+/* Botões nativos do LiveKit (microfone, câmera, tela) no mesmo estilo */
+.neon-controlbar .lk-control-bar {
+  border-top: 0;
+  padding: 0;
+  gap: 0.5rem;
+}
+
+.neon-controlbar .lk-button {
+  min-width: 3rem;
+  height: 3rem;
+  padding: 0 0.9rem;
+  border-radius: 9999px;
+  background: rgba(36, 27, 76, 0.85);
+  color: var(--tk-text-muted);
+  border: 1px solid rgba(139, 92, 246, 0.22);
+}
+
+.neon-controlbar .lk-button:not(:disabled):hover {
+  background: rgba(54, 40, 110, 0.95);
+  color: #fff;
+}
+
+.neon-controlbar .lk-button[data-lk-enabled="true"] {
+  background: var(--tk-accent-grad);
+  color: #fff;
+  border-color: rgba(216, 180, 254, 0.55);
+  box-shadow: 0 0 20px var(--tk-accent-glow);
+}
+
+.neon-controlbar .lk-button-group {
+  height: 3rem;
+}
+
+.neon-controlbar .lk-button-group > .lk-button:first-child {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.neon-controlbar .lk-button-group-menu > .lk-button {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: 0;
+}
+
+.neon-controlbar .lk-device-menu {
+  z-index: 70;
+  background: var(--tk-bg-panel);
+  border-color: var(--tk-border);
+}
+
+.neon-controlbar .lk-media-device-select [data-lk-active="true"] > .lk-button {
+  background: var(--tk-accent-grad);
+}
+
+/* Celular: botões da sala de voz um pouco menores para caber numa linha */
+@media (max-width: 767px) {
+  .neon-btn {
+    width: 2.75rem !important;
+    height: 2.75rem !important;
+  }
+
+  .neon-btn-danger {
+    width: 3.1rem !important;
+    height: 3.1rem !important;
+  }
+
+  .neon-controlbar .lk-button {
+    min-width: 2.75rem;
+    height: 2.75rem;
+    padding: 0 0.7rem;
+  }
+
+  .neon-controlbar .lk-button-group {
+    height: 2.75rem;
+  }
+
+  .neon-frame {
+    border-radius: 14px;
+  }
+}
+
+/* Campo de busca arredondado */
+.neon-input {
+  background: rgba(26, 20, 56, 0.9);
+  border: 1px solid rgba(139, 92, 246, 0.25);
+  border-radius: 10px;
+}
+
+.neon-input:focus {
+  outline: none;
+  border-color: rgba(192, 132, 252, 0.7);
+  box-shadow: 0 0 0 3px rgba(168, 85, 247, 0.18);
+}
+
+/* Bolinha de online */
+.neon-online-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: var(--tk-green);
+  box-shadow: 0 0 8px rgba(62, 224, 122, 0.8);
 }
 
 .no-scrollbar {

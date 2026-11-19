@@ -23,6 +23,28 @@ const nextConfig: NextConfig = {
       bodySizeLimit: "500mb" as `${number}${"kb" | "mb" | "gb"}`,
     },
   },
+  async headers() {
+    return [
+      {
+        // Cabeçalhos básicos de segurança em todas as páginas
+        source: "/:path*",
+        headers: [
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          { key: "X-Frame-Options", value: "SAMEORIGIN" },
+        ],
+      },
+      {
+        // Arquivos enviados pelos usuários: nunca executam script, mesmo se abertos direto
+        source: "/uploads/:path*",
+        headers: [
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          // script-src 'none' bloqueia JavaScript; imagens, vídeos e PDFs continuam abrindo normalmente
+          { key: "Content-Security-Policy", value: "script-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'" },
+        ],
+      },
+    ];
+  },
 };
 
 export default nextConfig;

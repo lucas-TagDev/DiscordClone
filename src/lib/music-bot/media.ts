@@ -1,3 +1,4 @@
+import { readSpotifyTrack, spotifyTrackUrl } from "@/lib/music-bot/spotify";
 import { spawn } from "node:child_process";
 import type { Readable } from "node:stream";
 import { PCM_CHANNELS, PCM_SAMPLE_RATE, type MusicBotBinaries } from "@/lib/music-bot/config";
@@ -17,6 +18,7 @@ export type PlaylistResolution = {
   tracks: TrackMetadata[];
   /** true quando a playlist tem mais faixas do que o limite consultado. */
   truncated: boolean;
+  sourceNote?: string;
 };
 
 const YTDLP_COMMON_ARGS = ["--no-warnings", "--no-progress", "--socket-timeout", "20"];
@@ -100,6 +102,8 @@ type YtDlpInfo = {
   url?: string;
   id?: string;
   ie_key?: string;
+  channel?: string;
+  uploader?: string;
   entries?: YtDlpInfo[];
 };
 
@@ -171,6 +175,46 @@ const readPlaylistEntries = (
   };
 };
 
+const normalizeMusicText = (value: string) => value.normalize("NFD")
+  .replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+
+const resolveSpotifyTrack = async (url: string, binaries: MusicBotBinaries): Promise<PlaylistResolution> => {
+  const track = await readSpotifyTrack(url);
+  const query = `${track.artists.join(" ")} ${track.name} official audio`.trim();
+  const stdout = await collectProcess(binaries.ytDlpPath,
+    [...YTDLP_COMMON_ARGS, "--flat-playlist", "--dump-single-json", `ytsearch5:${query}`], "yt-dlp");
+  let info: YtDlpInfo;
+  try { info = JSON.parse(stdout) as YtDlpInfo; }
+  catch { throw new MediaError("Não consegui interpretar a busca da música no YouTube."); }
+  const words = normalizeMusicText(track.name).split(" ").filter(Boolean);
+  // Sem artista (plano B via oEmbed) a correspondência exige mais do título
+  const artist = track.artists[0] ? normalizeMusicText(track.artists[0]) : null;
+  const minTitleScore = artist ? 0.6 : 0.8;
+  const candidates = (info.entries ?? []).flatMap((entry) => {
+    if (!entry || isLiveEntry(entry)) return [];
+    const candidateUrl = readEntryUrl(entry);
+    if (!candidateUrl) return [];
+    const title = normalizeMusicText(entry.title ?? "");
+    const author = normalizeMusicText(`${entry.channel ?? ""} ${entry.uploader ?? ""} ${entry.title ?? ""}`);
+    const titleScore = words.filter((word) => title.split(" ").includes(word)).length / Math.max(1, words.length);
+    if (titleScore < minTitleScore || (artist && !author.includes(artist))) return [];
+    const duration = readDuration(entry.duration);
+    const delta = duration && track.durationSeconds ? Math.abs(duration - track.durationSeconds) : null;
+    if (delta !== null && delta > Math.max(25, (track.durationSeconds ?? 0) * 0.15)) return [];
+    // Prefer the requested edition over covers/remixes/live versions with a similar name.
+    const alternate = ["cover", "remix", "live", "karaoke", "sped", "slowed"]
+      .filter((word) => title.split(" ").includes(word) && !normalizeMusicText(track.name).split(" ").includes(word)).length;
+    return [{ entry, url: candidateUrl, score: titleScore * 10 - alternate * 8 - (delta ?? 15) / 10 }];
+  }).sort((a, b) => b.score - a.score);
+  const match = candidates[0];
+  if (!match || match.score < 0) throw new MediaError("Não encontrei uma versão correspondente no YouTube. Envie um link direto do YouTube ou YouTube Music.");
+  return {
+    playlistTitle: null, truncated: false,
+    tracks: [readMetadata(match.entry, match.url)],
+    sourceNote: `Identificada pelo Spotify: ${track.artists.length ? `${track.artists.join(", ")} — ` : ""}${track.name}.\n${track.url}\nÁudio correspondente do YouTube: ${match.url}`,
+  };
+};
+
 /**
  * Resolve o link em uma ou mais faixas. Um link com playlist (ex: `watch?v=...&list=...`)
  * devolve todas as faixas dela, até `maxTracks`; um link de vídeo único devolve uma só.
@@ -182,6 +226,16 @@ export const resolveTracks = async (
 ): Promise<PlaylistResolution> => {
   if (!isHttpUrl(url)) {
     throw new MediaError("Envie um link http(s) válido.");
+  }
+
+  const spotifyUrl = spotifyTrackUrl(url);
+  if (spotifyUrl) return resolveSpotifyTrack(spotifyUrl, binaries);
+
+  // YouTube Music shares video/playlist identifiers with YouTube.
+  const parsedUrl = new URL(url);
+  if (parsedUrl.hostname === "music.youtube.com") {
+    parsedUrl.hostname = "www.youtube.com";
+    url = parsedUrl.toString();
   }
 
   // Consulta leve: `--flat-playlist` traz título/duração de cada faixa sem baixar mídia.

@@ -274,7 +274,7 @@ const handlePlay = async (
     postBotMessage(context.serverId, context.channelId, config, content);
 
   if (!argument) {
-    await reply("Use /play <link> para colocar uma música na fila.");
+    await reply("Use /play <link do YouTube, YouTube Music ou faixa do Spotify> para colocar uma música na fila.");
     return;
   }
 
@@ -323,12 +323,12 @@ const handlePlay = async (
     const item = accepted[0];
 
     if (wasIdle) {
-      await reply(`Tocando agora: ${item.title}${formatDuration(item.durationSeconds)}`);
+      await reply(`Tocando agora: ${item.title}${formatDuration(item.durationSeconds)}${resolution.sourceNote ? `\n${resolution.sourceNote}` : ""}`);
       return;
     }
 
     await reply(
-      `Adicionada à fila (#${player.pendingCount()}): ${item.title}${formatDuration(item.durationSeconds)}`,
+      `Adicionada à fila (#${player.pendingCount()}): ${item.title}${formatDuration(item.durationSeconds)}${resolution.sourceNote ? `\n${resolution.sourceNote}` : ""}`,
     );
     return;
   }

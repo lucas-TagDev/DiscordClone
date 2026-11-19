@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { AdminUserAccessLog } from "@/components/admin-user-access-log";
 import { useRouter } from "next/navigation";
 
 interface User {
@@ -8,6 +9,9 @@ interface User {
   username: string | null;
   displayName: string;
   avatarUrl: string | null;
+  registrationIp: string | null;
+  lastLoginIp: string | null;
+  lastLoginAt: string | null;
   isAdmin: boolean;
   createdAt: string;
   updatedAt: string;
@@ -33,6 +37,7 @@ export default function AdminPanel() {
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [page, setPage] = useState(1);
+  const [accessLogUser, setAccessLogUser] = useState<User | null>(null);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [editFormData, setEditFormData] = useState({
     username: "",
@@ -126,8 +131,8 @@ export default function AdminPanel() {
         throw new Error(data.error || "Erro ao atualizar usuário");
       }
 
-      const updatedUser = await response.json();
-      setUsers(users.map((u) => (u.id === updatedUser.id ? updatedUser : u)));
+      const { user: updatedUser } = await response.json();
+      setUsers(users.map((u) => (u.id === updatedUser.id ? { ...u, ...updatedUser } : u)));
       setEditingUser(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro ao atualizar usuário");
@@ -170,7 +175,7 @@ export default function AdminPanel() {
           <div className="flex gap-4 mb-6">
             <input
               type="text"
-              placeholder="Buscar por nome de usuário ou nome de exibição..."
+              placeholder="Buscar por usuário, nome ou IP..."
               value={searchTerm}
               onChange={(e) => {
                 setSearchTerm(e.target.value);
@@ -196,6 +201,8 @@ export default function AdminPanel() {
                       <th className="text-left py-3 px-4">Nome de Exibição</th>
                       <th className="text-left py-3 px-4">Admin</th>
                       <th className="text-left py-3 px-4">Criado em</th>
+                      <th className="text-left py-3 px-4">IP de cadastro</th>
+                      <th className="text-left py-3 px-4">Último login</th>
                       <th className="text-left py-3 px-4">Ações</th>
                     </tr>
                   </thead>
@@ -219,7 +226,14 @@ export default function AdminPanel() {
                         <td className="py-3 px-4">
                           {new Date(user.createdAt).toLocaleDateString("pt-BR")}
                         </td>
+                        <td className="py-3 px-4 font-mono text-sm">{user.registrationIp ?? "Não registrado"}</td>
+                        <td className="py-3 px-4 text-sm">
+                          <div className="font-mono">{user.lastLoginIp ?? "Não registrado"}</div>
+                          {user.lastLoginAt && <div className="text-xs text-gray-400">{new Date(user.lastLoginAt).toLocaleString("pt-BR")}</div>}
+                        </td>
                         <td className="py-3 px-4">
+                          <button type="button" onClick={() => setAccessLogUser(user)}
+                            className="mb-1 mr-2 rounded bg-gray-600 px-3 py-1 text-sm hover:bg-gray-500">Histórico de acessos</button>
                           <button
                             onClick={() => handleEditClick(user)}
                             className="bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded text-sm mr-2"
@@ -266,6 +280,8 @@ export default function AdminPanel() {
           )}
         </div>
 
+        {accessLogUser && <AdminUserAccessLog key={accessLogUser.id} userId={accessLogUser.id}
+          name={accessLogUser.displayName} onClose={() => setAccessLogUser(null)} />}
         {editingUser && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
             <div className="bg-gray-800 rounded-lg shadow-lg p-6 w-full max-w-md">

@@ -1,3 +1,4 @@
+import { getClientIp } from "@/lib/client-ip";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { registerUser } from "@/lib/store";
@@ -29,7 +30,7 @@ export async function POST(request: Request) {
         );
       }
 
-      const clientIp = request.headers.get("x-forwarded-for") ?? request.headers.get("x-real-ip") ?? undefined;
+      const clientIp = getClientIp(request.headers) ?? undefined;
       const isValid = await verifyTurnstileToken(body.turnstileToken, clientIp);
       
       if (!isValid) {
@@ -40,7 +41,7 @@ export async function POST(request: Request) {
       }
     }
 
-    const user = await registerUser(body.username, body.displayName, body.password);
+    const user = await registerUser(body.username, body.displayName, body.password, getClientIp(request.headers));
     const response = NextResponse.json({ user }, { status: 201 });
     response.cookies.set({
       name: getAuthCookieName(),

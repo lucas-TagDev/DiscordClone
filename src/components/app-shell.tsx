@@ -1,13 +1,16 @@
 "use client";
 /* eslint-disable react-hooks/set-state-in-effect */
 
-import { ClipboardEvent, FormEvent, MouseEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { ClipboardEvent, FormEvent, MouseEvent, ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { useRef } from "react";
 import Picker from "@emoji-mart/react";
 import emojiData from "@emoji-mart/data";
+import { followTimelineBottom, revealTimelineMessage } from "@/lib/message-navigation";
+import { ChannelMessageSearch } from "@/components/channel-message-search";
 import { VoiceRoom } from "@/components/voice-room";
 import { StyledDisplayName } from "@/components/styled-display-name";
 import { MicLevelMeter } from "@/components/mic-level-meter";
+import { useIsMobile } from "@/lib/use-is-mobile";
 import { LinkPreview } from "@/components/link-preview";
 import { SpoilerText } from "@/components/spoiler-text";
 import { MessageReactions } from "@/components/message-reactions";
@@ -65,6 +68,39 @@ type VoicePresenceMember = {
   cameraEnabled?: boolean;
 };
 
+
+
+type VoiceStatusIconProps = { type: "mic" | "camera" | "listen"; active: boolean };
+
+const VoiceStatusIcon = ({ type, active }: VoiceStatusIconProps) => {
+  const label = type === "mic" ? (active ? "Microfone ativo" : "Microfone silenciado")
+    : type === "camera" ? (active ? "Câmera ativa" : "Câmera inativa")
+    : (active ? "Escutando" : "Sem áudio da sala");
+  const paths = type === "mic"
+    ? <><path d="M9 5a3 3 0 0 1 6 0v6a3 3 0 0 1-6 0V5Z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3m-3 0h6"/></>
+    : type === "camera"
+    ? <><rect x="3" y="6" width="13" height="12" rx="2"/><path d="m16 10 5-3v10l-5-3Z"/></>
+    : <><path d="M4 13a8 8 0 0 1 16 0"/><path d="M4 13v4h3v-4M20 13v4h-3v-4"/></>;
+  return <span title={label} aria-label={label} className={`inline-flex h-4 w-4 items-center justify-center ${active ? "text-[var(--tk-text-muted)]" : "text-[#ED4245]"}`}>
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {paths}{!active && <path d="m3 3 18 18" strokeWidth="2.2"/>}
+    </svg>
+  </span>;
+};
+
+const VoiceChannelIcon = ({ locked = false }: { locked?: boolean }) => <span className="inline-flex items-center gap-1" title={locked ? "Canal bloqueado" : "Canal de voz"}>
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 10v4m4-7v10m4-13v16m4-13v10m4-7v4"/></svg>{locked && <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 10h12v10H6z"/><path d="M8 10V7a4 4 0 0 1 8 0v3h-2V7a2 2 0 0 0-4 0v3z"/></svg>}
+</span>;
+
+const COLLAPSED_CATEGORIES_STORAGE_KEY = "twinslkit:collapsed-categories";
+
+// Ícone de equalizador usado nos títulos de seção (tema neon)
+const EqualizerGlyph = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true" className="shrink-0">
+    <path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" />
+  </svg>
+);
+
 export function AppShell() {
   const appName = process.env.NEXT_PUBLIC_APP_NAME?.trim() || "TwinSLKIt";
   const appInitials =
@@ -75,7 +111,7 @@ export function AppShell() {
       .slice(0, 2) || "TS";
 
   // Sidebar resize state
-  const [sidebarWidth, setSidebarWidth] = useState(240);
+  const [sidebarWidth, setSidebarWidth] = useState(260);
   const isResizingRef = useRef(false);
   const handleSidebarMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -177,7 +213,52 @@ export function AppShell() {
   const [showDirectFriendsModal, setShowDirectFriendsModal] = useState(false);
   const [directFriendSearchTerm, setDirectFriendSearchTerm] = useState("");
   const [sidebarMemberSearchTerm, setSidebarMemberSearchTerm] = useState("");
+  // Categorias de canais recolhidas (lembrado por navegador)
+  const [collapsedCategoryIds, setCollapsedCategoryIds] = useState<Record<string, boolean>>({});
+  const collapsedCategoriesLoadedRef = useRef(false);
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(COLLAPSED_CATEGORIES_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object") {
+          setCollapsedCategoryIds(parsed as Record<string, boolean>);
+        }
+      }
+    } catch {
+      // armazenamento indisponível: tudo começa expandido
+    }
+    collapsedCategoriesLoadedRef.current = true;
+  }, []);
+  useEffect(() => {
+    if (!collapsedCategoriesLoadedRef.current) return;
+    try {
+      window.localStorage.setItem(COLLAPSED_CATEGORIES_STORAGE_KEY, JSON.stringify(collapsedCategoryIds));
+    } catch {
+      // ignora
+    }
+  }, [collapsedCategoryIds]);
+  const toggleCategoryCollapsed = useCallback((categoryId: string) => {
+    setCollapsedCategoryIds((current) => {
+      const next = { ...current };
+      if (next[categoryId]) {
+        delete next[categoryId];
+      } else {
+        next[categoryId] = true;
+      }
+      return next;
+    });
+  }, []);
   const [isMembersPanelOpen, setIsMembersPanelOpen] = useState(true);
+  // Layout de celular: "nav" = servidores + canais, "content" = chat/voz em tela cheia
+  const isMobile = useIsMobile();
+  const [mobileView, setMobileView] = useState<"nav" | "content">("nav");
+  const [showMobileComposerTools, setShowMobileComposerTools] = useState(false);
+  useEffect(() => {
+    if (isMobile) {
+      setIsMembersPanelOpen(false);
+    }
+  }, [isMobile]);
   const [settingsMemberSearchTerm, setSettingsMemberSearchTerm] = useState("");
   const [visibleDirectFriendsCount, setVisibleDirectFriendsCount] = useState(30);
   const [newDirectFriendUserId, setNewDirectFriendUserId] = useState("");
@@ -254,6 +335,11 @@ export function AppShell() {
   const [newEmojiFile, setNewEmojiFile] = useState<File | null>(null);
   const [newEmojiInputKey, setNewEmojiInputKey] = useState(0);
   const [serverInvites, setServerInvites] = useState<ServerInvite[]>([]);
+  // Modal mostrado quando o usuário cria o primeiro servidor dele
+  const [firstServerWelcome, setFirstServerWelcome] = useState<{ serverId: string; serverName: string } | null>(null);
+  const [welcomeInviteCode, setWelcomeInviteCode] = useState<string | null>(null);
+  const [welcomeInviteCopied, setWelcomeInviteCopied] = useState(false);
+  const [welcomeInviteBusy, setWelcomeInviteBusy] = useState(false);
   const [serverBans, setServerBans] = useState<ServerBan[]>([]);
   const [serverAuditLogs, setServerAuditLogs] = useState<ServerAuditLog[]>([]);
   const [auditLogsError, setAuditLogsError] = useState<string | null>(null);
@@ -505,6 +591,8 @@ export function AppShell() {
   const selectedDirectConversationIdRef = useRef<string | null>(null);
   const appModeRef = useRef<"server" | "direct">("server");
   const userIdRef = useRef<string>("");
+  const voiceMicrophoneEnabledRef = useRef<boolean | null>(null);
+  const [voiceEntryMicEnabled, setVoiceEntryMicEnabled] = useState(true);
   const voiceTokenRef = useRef<string | null>(null);
   const directUnreadByConversationIdRef = useRef<Record<string, number>>({});
   const knownDirectLastMessageAtByConversationIdRef = useRef<Record<string, string>>({});
@@ -514,6 +602,12 @@ export function AppShell() {
   const knownServerLastMessageAtByIdRef = useRef<Record<string, string>>({});
   const serverUnreadByIdRef = useRef<Record<string, number>>({});
   const channelUnreadByIdRef = useRef<Record<string, number>>({});
+  const authenticatedAudioRef = useRef(false);
+  const messageJumpActiveRef = useRef(false);
+  const messageJumpAbortRef = useRef<AbortController | null>(null);
+  const [pendingMessageJump, setPendingMessageJump] = useState<string | null>(null);
+  const [showChannelSearch, setShowChannelSearch] = useState(false);
+  const [isDraggingChatFile, setIsDraggingChatFile] = useState(false);
   const chatNotificationAudioRef = useRef<HTMLAudioElement | null>(null);
   const voiceMoveAudioRef = useRef<HTMLAudioElement | null>(null);
   const voicePresenceByChannelRef = useRef<Record<string, Set<string>>>({});
@@ -794,6 +888,32 @@ export function AppShell() {
 
     const months = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
     return `${date.getDate()} ${months[date.getMonth()]} ${date.getFullYear()}`;
+  }, []);
+
+  // Texto do tooltip na lista de membros: "Ativo pela última vez ..."
+  const formatLastSeen = useCallback((lastSeenAt?: string | null) => {
+    if (!lastSeenAt) {
+      return "Última atividade desconhecida";
+    }
+    const date = new Date(lastSeenAt);
+    if (Number.isNaN(date.getTime())) {
+      return "Última atividade desconhecida";
+    }
+
+    const diffMs = Date.now() - date.getTime();
+    const minutes = Math.floor(diffMs / 60_000);
+    if (minutes < 3) return "Ativo agora";
+    if (minutes < 60) return `Ativo há ${minutes} minutos`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `Ativo há ${hours} ${hours === 1 ? "hora" : "horas"}`;
+
+    const time = date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    if (date.toDateString() === yesterday.toDateString()) return `Ativo ontem às ${time}`;
+    const days = Math.floor(hours / 24);
+    if (days < 7) return `Ativo há ${days} dias`;
+    return `Ativo pela última vez em ${date.toLocaleDateString("pt-BR")} às ${time}`;
   }, []);
 
   const userDisplayNameStyle: DisplayNameStyle = useMemo(() => ({
@@ -1171,6 +1291,10 @@ export function AppShell() {
 
   useEffect(() => {
     selectedChannelIdRef.current = selectedChannelId;
+    messageJumpAbortRef.current?.abort();
+    messageJumpAbortRef.current = null;
+    messageJumpActiveRef.current = false;
+    setPendingMessageJump(null);
     shouldAutoScrollMessagesRef.current = true;
   }, [selectedChannelId]);
 
@@ -1229,12 +1353,20 @@ export function AppShell() {
     return () => {
       window.removeEventListener("pointerdown", unlockAudio);
       window.removeEventListener("keydown", unlockAudio);
+      audio.pause();
+      voiceMoveAudio.pause();
       chatNotificationAudioRef.current = null;
       voiceMoveAudioRef.current = null;
     };
   }, []);
 
   useEffect(() => {
+    authenticatedAudioRef.current = isAuthenticated;
+    if (!isAuthenticated) {
+      [chatNotificationAudioRef.current, voiceMoveAudioRef.current].forEach((audio) => {
+        if (audio) { audio.pause(); audio.currentTime = 0; }
+      });
+    }
     if (isAuthenticated && userId) {
       return;
     }
@@ -1270,11 +1402,6 @@ export function AppShell() {
     }
 
     setErrorOpacity(1);
-
-    const accessDeniedAudio = new Audio("/accessdenied.mp3");
-    accessDeniedAudio.play().catch(() => {
-      // Silently fail if audio won't play (e.g., user hasn't interacted with page yet)
-    });
 
     const hideTimeout = setTimeout(() => {
       setErrorOpacity(0);
@@ -1701,6 +1828,7 @@ export function AppShell() {
   }, [bannedUserContextMenu]);
 
   const playChatNotification = useCallback((force?: boolean) => {
+    if (!authenticatedAudioRef.current) return;
     if (!force && !chatNotificationSoundEnabledRef.current) {
       return;
     }
@@ -1717,6 +1845,7 @@ export function AppShell() {
   }, []);
 
   const playVoiceMoveSound = useCallback(() => {
+    if (!authenticatedAudioRef.current) return;
     const audio = voiceMoveAudioRef.current;
     if (audio) {
       audio.currentTime = 0;
@@ -1731,7 +1860,7 @@ export function AppShell() {
 
   // Beep de fallback caso o arquivo /sounds/move.mp3 não exista
   const playSynthesizedVoiceMoveBeep = useCallback(() => {
-    if (typeof window === "undefined") {
+    if (typeof window === "undefined" || !authenticatedAudioRef.current) {
       return;
     }
 
@@ -2045,12 +2174,29 @@ export function AppShell() {
     setVoiceListeningByUserId(stateByUserId);
   }, []);
 
+  useLayoutEffect(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    return followTimelineBottom(container, () =>
+      shouldAutoScrollMessagesRef.current && !messageJumpActiveRef.current && !isLoadingOlderMessagesRef.current,
+    );
+  }, [messages, selectedChannelId, appMode, showSettingsPanel]);
+
+  useLayoutEffect(() => {
+    const container = directMessagesContainerRef.current;
+    if (!container) return;
+    return followTimelineBottom(container, () =>
+      shouldAutoScrollDirectMessagesRef.current && !isLoadingOlderDirectMessagesRef.current,
+    );
+  }, [directMessages, selectedDirectConversationId, appMode, showSettingsPanel]);
+
   const loadMessages = useCallback(async (
     serverId: string,
     channelId: string,
     currentUserId: string,
     options?: { beforeCreatedAt?: string; beforeId?: string; appendOlder?: boolean },
   ) => {
+    if (messageJumpAbortRef.current || messageJumpActiveRef.current) return;
     const requestId = ++messagesRequestIdRef.current;
     const query = new URLSearchParams({
       userId: currentUserId,
@@ -2121,12 +2267,7 @@ export function AppShell() {
 
     setMessages(payload.messages);
 
-    requestAnimationFrame(() => {
-      const container = messagesContainerRef.current;
-      if (container && shouldAutoScrollMessagesRef.current) {
-        container.scrollTop = container.scrollHeight;
-      }
-    });
+
   }, [playChatNotification]);
 
   const loadDirectConversations = useCallback(async (currentUserId: string) => {
@@ -2328,12 +2469,7 @@ export function AppShell() {
 
     setDirectMessages(payload.messages);
 
-    requestAnimationFrame(() => {
-      const container = directMessagesContainerRef.current;
-      if (container && shouldAutoScrollDirectMessagesRef.current) {
-        container.scrollTop = container.scrollHeight;
-      }
-    });
+
   }, [playChatNotification]);
 
   useEffect(() => {
@@ -2608,6 +2744,7 @@ export function AppShell() {
 
   const loadOlderMessages = async () => {
     if (
+      messageJumpActiveRef.current ||
       isLoadingOlderMessages ||
       isLoadingOlderMessagesRef.current ||
       !hasMoreMessages ||
@@ -2640,7 +2777,7 @@ export function AppShell() {
 
     requestAnimationFrame(() => {
       const currentContainer = messagesContainerRef.current;
-      if (!currentContainer) {
+      if (!currentContainer || messageJumpActiveRef.current) {
         return;
       }
       const newHeight = currentContainer.scrollHeight;
@@ -2649,6 +2786,7 @@ export function AppShell() {
   };
 
   const onMessagesScroll = () => {
+    if (messageJumpAbortRef.current || messageJumpActiveRef.current || pendingMessageJump) return;
     const container = messagesContainerRef.current;
     if (!container) {
       return;
@@ -2807,6 +2945,11 @@ export function AppShell() {
   };
 
   const logout = () => {
+    authenticatedAudioRef.current = false;
+    [chatNotificationAudioRef.current, voiceMoveAudioRef.current].forEach((audio) => {
+      if (audio) { audio.pause(); audio.currentTime = 0; }
+    });
+    setError(null);
     void fetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
     handleVoiceLeave();
     setIsAuthenticated(false);
@@ -2969,6 +3112,18 @@ export function AppShell() {
     setBusy(true);
     setError(null);
 
+    const normalizedCurrentUserId = userId.trim().toLowerCase();
+    const firstServerWelcomeKey = `twinslkit:first-server-welcome:${normalizedCurrentUserId}`;
+    let alreadyWelcomed = false;
+    try {
+      alreadyWelcomed = window.localStorage.getItem(firstServerWelcomeKey) === "1";
+    } catch {
+      // armazenamento indisponível: decide só pelos servidores
+    }
+    const isFirstOwnedServer =
+      !alreadyWelcomed && !servers.some((server) => server.ownerId.trim().toLowerCase() === normalizedCurrentUserId);
+    const createdServerName = newServerName.trim();
+
     const formData = new FormData();
     formData.append("name", newServerName.trim());
     formData.append("creatorId", userId);
@@ -2994,6 +3149,42 @@ export function AppShell() {
     setShowCreateServerModal(false);
     await loadServers(userId);
     setSelectedServerId(payload.server.id);
+
+    if (isFirstOwnedServer) {
+      try {
+        window.localStorage.setItem(firstServerWelcomeKey, "1");
+      } catch {
+        // ignora
+      }
+      setWelcomeInviteCode(null);
+      setWelcomeInviteCopied(false);
+      setFirstServerWelcome({ serverId: payload.server.id as string, serverName: (payload.server.name as string) || createdServerName });
+    }
+  };
+
+  const createWelcomeInvite = async () => {
+    if (!firstServerWelcome || !userId || welcomeInviteBusy) {
+      return;
+    }
+    setWelcomeInviteBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/servers/${firstServerWelcome.serverId}/invites`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ actorId: userId }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setError(payload.error ?? "Falha ao gerar convite.");
+        return;
+      }
+      const code = (payload.invite?.code as string | undefined) ?? null;
+      await loadServerInvites(firstServerWelcome.serverId, userId);
+      setWelcomeInviteCode(code);
+    } finally {
+      setWelcomeInviteBusy(false);
+    }
   };
 
   const saveServerSettings = async (event: FormEvent) => {
@@ -3732,6 +3923,23 @@ export function AppShell() {
     await loadServerDetails(selectedServerId, userId);
   };
 
+  const moveCategory = async (direction: "up" | "down") => {
+    if (!selectedServerId || !contextMenuCategory || busy) return;
+    setBusy(true);
+    setCategoryContextMenu(null);
+    try {
+      const response = await fetch(`/api/servers/${selectedServerId}/categories/${contextMenuCategory.id}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ actorId: userId, direction }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? "Falha ao mover categoria.");
+      await loadServerDetails(selectedServerId, userId);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Falha de conexão ao mover categoria.");
+    } finally { setBusy(false); }
+  };
+
   const deleteCategory = async () => {
     if (!selectedServerId || !contextMenuCategory || !isAuthenticated || !userId) {
       return;
@@ -4014,6 +4222,7 @@ export function AppShell() {
   };
 
   const selectDirectConversation = (conversationId: string) => {
+    setMobileView("content");
     setSelectedDirectConversationId(conversationId);
     setDirectUnreadByConversationId((currentValue) => {
       if (!currentValue[conversationId]) {
@@ -4202,19 +4411,30 @@ export function AppShell() {
       setReplyingToDirectMessage(null);
     }
 
+    const filesToSend = [...selectedDirectFiles];
+    if (trimmedContent.length > 50_000) {
+      filesToSend.push(new File([trimmedContent], "mensagem.txt", { type: "text/plain;charset=utf-8" }));
+      trimmedContent = "";
+    }
+
+    if (filesToSend.some((file) => file.size > channelUploadMaxFileSizeBytes)) {
+      setError(`Um arquivo excede o limite de ${channelUploadMaxFileSizeMb}MB.`);
+      return;
+    }
+
     setBusy(true);
     setError(null);
 
     try {
-      if (selectedDirectFiles.length > 0) {
+      if (filesToSend.length > 0) {
         setDirectUploadProgress(0);
       }
 
-      let attachmentLines: string[] = [];
-      if (selectedDirectFiles.length > 0) {
-        const totalSize = selectedDirectFiles.reduce((acc, f) => acc + f.size, 0);
+      const attachmentLines: string[] = [];
+      if (filesToSend.length > 0) {
+        const totalSize = filesToSend.reduce((acc, f) => acc + f.size, 0);
         let uploaded = 0;
-        for (const file of selectedDirectFiles) {
+        for (const file of filesToSend) {
           const result = await uploadFileChunked(file, "direct", (pct) => {
             const fileFraction = file.size / totalSize;
             const overall = Math.round(((uploaded / totalSize) + (pct / 100) * fileFraction) * 100);
@@ -4226,7 +4446,12 @@ export function AppShell() {
         setDirectUploadProgress(100);
       }
 
-      const composedContent = [trimmedContent, ...attachmentLines].filter(Boolean).join("\n");
+      let composedContent = [trimmedContent, ...attachmentLines].filter(Boolean).join("\n");
+      if (composedContent.length > 50_000 && trimmedContent) {
+        const result = await uploadFileChunked(new File([trimmedContent], "mensagem.txt", { type: "text/plain;charset=utf-8" }), "direct", () => undefined);
+        attachmentLines.push(`[file]|${result.name}|${result.size}|${result.url}`);
+        composedContent = attachmentLines.join("\n");
+      }
 
       const response = await fetch("/api/direct/messages", {
         method: "POST",
@@ -4720,20 +4945,31 @@ export function AppShell() {
       setReplyingToMessage(null);
     }
 
+    const filesToSend = [...selectedFiles];
+    if (textContent.length > 50_000) {
+      filesToSend.push(new File([textContent], "mensagem.txt", { type: "text/plain;charset=utf-8" }));
+      textContent = "";
+    }
+
+    if (filesToSend.some((file) => file.size > channelUploadMaxFileSizeBytes)) {
+      setError(`Um arquivo excede o limite de ${channelUploadMaxFileSizeMb}MB.`);
+      return;
+    }
+
     setBusy(true);
     setError(null);
 
     try {
       const endpoint = `/api/servers/${selectedServerId}/channels/${selectedChannel.id}/messages`;
-      if (selectedFiles.length > 0) {
+      if (filesToSend.length > 0) {
         setServerUploadProgress(0);
       }
 
-      let attachmentLines: string[] = [];
-      if (selectedFiles.length > 0) {
-        const totalSize = selectedFiles.reduce((acc, f) => acc + f.size, 0);
+      const attachmentLines: string[] = [];
+      if (filesToSend.length > 0) {
+        const totalSize = filesToSend.reduce((acc, f) => acc + f.size, 0);
         let uploaded = 0;
-        for (const file of selectedFiles) {
+        for (const file of filesToSend) {
           const result = await uploadFileChunked(file, "channels", (pct) => {
             const fileFraction = file.size / totalSize;
             const overall = Math.round(((uploaded / totalSize) + (pct / 100) * fileFraction) * 100);
@@ -4745,7 +4981,12 @@ export function AppShell() {
         setServerUploadProgress(100);
       }
 
-      const composedContent = [textContent, ...attachmentLines].filter(Boolean).join("\n");
+      let composedContent = [textContent, ...attachmentLines].filter(Boolean).join("\n");
+      if (composedContent.length > 50_000 && textContent) {
+        const result = await uploadFileChunked(new File([textContent], "mensagem.txt", { type: "text/plain;charset=utf-8" }), "channels", () => undefined);
+        attachmentLines.push(`[file]|${result.name}|${result.size}|${result.url}`);
+        composedContent = attachmentLines.join("\n");
+      }
 
       const response = await fetch(endpoint, {
         method: "POST",
@@ -4971,7 +5212,7 @@ export function AppShell() {
               key={`${keyPrefix}-sticker-${sticker.id}-${index}`}
               src={sticker.url}
               alt={`figurinha ${sticker.name}`}
-              className="inline-block max-h-20 rounded border border-[#1F2023] align-middle"
+              className="inline-block max-h-20 rounded border border-[var(--tk-line)] align-middle"
             />
           );
         }
@@ -5003,7 +5244,7 @@ export function AppShell() {
             href={part}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-indigo-400 hover:text-[#949CF7] underline break-all"
+            className="text-indigo-400 hover:text-[var(--tk-accent-soft)] underline break-all"
           >
             {part}
           </a>
@@ -5050,14 +5291,14 @@ export function AppShell() {
         return (
           <div
             key={`${keyPrefix}-code-${segmentIndex}`}
-            className="my-2 rounded border border-[#1F2023] bg-[#2B2D31] overflow-x-auto"
+            className="my-2 rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)] overflow-x-auto"
           >
             {segment.language && (
-              <div className="border-b border-[#1F2023] px-2 py-1 text-[11px] uppercase tracking-wide text-[#949BA4]">
+              <div className="border-b border-[var(--tk-line)] px-2 py-1 text-[11px] uppercase tracking-wide text-[var(--tk-text-subtle)]">
                 {segment.language}
               </div>
             )}
-            <pre className="px-3 py-2 text-xs text-[#F2F3F5] whitespace-pre-wrap break-words">
+            <pre className="px-3 py-2 text-xs text-[var(--tk-text-strong)] whitespace-pre-wrap break-words">
               <code>{segment.value}</code>
             </pre>
           </div>
@@ -5108,12 +5349,12 @@ export function AppShell() {
     ).size;
 
     return (
-      <div className="rounded-lg bg-[#2B2D31] border border-[#1E1F22] p-4 max-w-md">
+      <div className="rounded-lg bg-[var(--tk-bg-panel)] border border-[var(--tk-bg-deep)] p-4 max-w-md">
         <div className="flex items-center gap-2 mb-3">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="#5865F2"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2ZM9 17H7v-7h2v7Zm4 0h-2V7h2v10Zm4 0h-2v-4h2v4Z"/></svg>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="#A855F7"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2ZM9 17H7v-7h2v7Zm4 0h-2V7h2v10Zm4 0h-2v-4h2v4Z"/></svg>
           <span className="text-white font-semibold text-sm">{poll.question}</span>
         </div>
-        {poll.multiVote && <p className="text-[10px] text-[#949BA4] mb-2">Múltiplos votos permitidos</p>}
+        {poll.multiVote && <p className="text-[10px] text-[var(--tk-text-subtle)] mb-2">Múltiplos votos permitidos</p>}
         <div className="flex flex-col gap-1.5">
           {poll.options.map((opt, idx) => {
             const emoji = POLL_NUMBER_EMOJIS[idx];
@@ -5130,27 +5371,27 @@ export function AppShell() {
                 onClick={() => toggleServerMessageReaction(message.id, emoji)}
                 className={`relative flex items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors ${
                   hasVoted
-                    ? "bg-[#5865F2]/20 border border-[#5865F2] text-white"
-                    : "bg-[#383A40] hover:bg-[#43454D] border border-transparent text-[#DBDEE1]"
+                    ? "bg-[var(--tk-accent)]/20 border border-[var(--tk-accent)] text-white"
+                    : "bg-[var(--tk-bg-elev)] hover:bg-[var(--tk-bg-active)] border border-transparent text-[var(--tk-text)]"
                 }`}
               >
                 <div
-                  className="absolute inset-0 rounded-md bg-[#5865F2]/10 transition-all"
+                  className="absolute inset-0 rounded-md bg-[var(--tk-accent)]/10 transition-all"
                   style={{ width: `${pct}%` }}
                 />
                 <span className="relative z-10 shrink-0">{emoji}</span>
                 <span className="relative z-10 flex-1 truncate">{opt}</span>
-                <span className="relative z-10 text-xs text-[#949BA4] shrink-0">{count > 0 ? `${count} (${pct}%)` : ""}</span>
+                <span className="relative z-10 text-xs text-[var(--tk-text-subtle)] shrink-0">{count > 0 ? `${count} (${pct}%)` : ""}</span>
               </button>
             );
           })}
         </div>
-        <p className="text-[11px] text-[#949BA4] mt-2">{totalVoters} {totalVoters === 1 ? "voto" : "votos"}</p>
+        <p className="text-[11px] text-[var(--tk-text-subtle)] mt-2">{totalVoters} {totalVoters === 1 ? "voto" : "votos"}</p>
       </div>
     );
   };
 
-  const scrollToAndFlashMessage = (messageId: string, containerRef: React.RefObject<HTMLDivElement | null>) => {
+  const scrollToAndFlashMessage = useCallback((messageId: string, containerRef: React.RefObject<HTMLDivElement | null>, behavior: ScrollBehavior = "smooth") => {
     const container = containerRef.current;
     if (!container) return;
     const el = container.querySelector(`[data-message-id="${messageId}"]`) as HTMLElement | null;
@@ -5160,7 +5401,7 @@ export function AppShell() {
     const elRect = el.getBoundingClientRect();
     const offsetTop = elRect.top - containerRect.top + container.scrollTop;
     const targetScroll = offsetTop - containerRect.height / 2 + elRect.height / 2;
-    container.scrollTo({ top: Math.max(0, targetScroll), behavior: "smooth" });
+    container.scrollTo({ top: Math.max(0, targetScroll), behavior });
     // Flash after scroll completes
     setTimeout(() => {
       el.classList.remove("message-flash");
@@ -5168,6 +5409,61 @@ export function AppShell() {
       el.classList.add("message-flash");
       setTimeout(() => el.classList.remove("message-flash"), 1500);
     }, 400);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!pendingMessageJump || !messagesContainerRef.current) return;
+    messageJumpActiveRef.current = true;
+    shouldAutoScrollMessagesRef.current = false;
+    return revealTimelineMessage(messagesContainerRef.current, pendingMessageJump, (found) => {
+      messageJumpActiveRef.current = false;
+      shouldAutoScrollMessagesRef.current = false;
+      setPendingMessageJump(null);
+      if (!found) setError("Não foi possível exibir a mensagem selecionada. Tente pesquisar novamente.");
+    });
+  }, [messages, pendingMessageJump, showSettingsPanel, appMode]);
+
+  useEffect(() => () => messageJumpAbortRef.current?.abort(), []);
+
+  const openSearchMessage = async (message: ChatMessage) => {
+    if (!selectedServerId || !selectedChannelId || !isAuthenticated) return;
+    messageJumpActiveRef.current = true;
+    ++messagesRequestIdRef.current;
+    shouldAutoScrollMessagesRef.current = false;
+    setNewServerMessageCount(0);
+    setError(null);
+    if (messages.some((item) => item.id === message.id)) {
+      setShowChannelSearch(false);
+      setPendingMessageJump(message.id);
+      return;
+    }
+    messageJumpAbortRef.current?.abort();
+    const controller = new AbortController();
+    messageJumpAbortRef.current = controller;
+    ++messagesRequestIdRef.current;
+    try {
+      const response = await fetch(`/api/servers/${selectedServerId}/channels/${selectedChannelId}/messages/${encodeURIComponent(message.id)}/context`, {
+        cache: "no-store", signal: controller.signal,
+      });
+      const payload = await response.json().catch(() => null) as MessagePageResponse | null;
+      if (!response.ok) throw new Error(payload?.error ?? "Não foi possível abrir a mensagem. Verifique se a atualização do site foi concluída.");
+      if (!payload || !Array.isArray(payload.messages)) throw new Error("O servidor não retornou o histórico da mensagem.");
+      if (controller.signal.aborted) return;
+      if (!payload.messages.some((item) => item.id === message.id)) {
+        throw new Error("O servidor retornou um histórico incompleto. Tente abrir a mensagem novamente.");
+      }
+      setMessages(payload.messages);
+      setHasMoreMessages(payload.hasMore);
+      setShowChannelSearch(false);
+      setPendingMessageJump(message.id);
+    } catch (cause) {
+      if (!controller.signal.aborted) {
+        messageJumpActiveRef.current = false;
+        setError(cause instanceof Error ? cause.message : "Falha ao abrir mensagem.");
+      }
+    } finally {
+      if (messageJumpAbortRef.current === controller) messageJumpAbortRef.current = null;
+    }
   };
 
   const findOriginalMessage = <T extends { content?: string | null }>(
@@ -5263,7 +5559,7 @@ export function AppShell() {
             <img
               src={url}
               alt="GIF enviado"
-              className="max-h-72 rounded border border-[#1F2023]"
+              className="max-h-72 rounded border border-[var(--tk-line)]"
             />
           </a>
         ))}
@@ -5342,8 +5638,8 @@ export function AppShell() {
 
     if (marker.status === "pending") {
       return (
-        <div className="mt-1 rounded border border-[#3F4147] bg-[#2B2D31]/80 px-2 py-2 text-xs space-y-2">
-          <p className="text-[#DBDEE1]">
+        <div className="mt-1 rounded border border-[var(--tk-border)] bg-[var(--tk-bg-panel)]/80 px-2 py-2 text-xs space-y-2">
+          <p className="text-[var(--tk-text)]">
             Solicitação de amizade pendente.
           </p>
           {isReceiver && (
@@ -5352,7 +5648,7 @@ export function AppShell() {
                 type="button"
                 disabled={busy}
                 onClick={() => void respondToDirectFriendRequest(marker.requestId, "accept")}
-                className="rounded bg-[#23A559] hover:bg-emerald-500 px-2 py-1 text-[11px] disabled:opacity-60"
+                className="rounded bg-[var(--tk-green)] hover:bg-emerald-500 px-2 py-1 text-[11px] disabled:opacity-60"
               >
                 Aceitar
               </button>
@@ -5360,19 +5656,19 @@ export function AppShell() {
                 type="button"
                 disabled={busy}
                 onClick={() => void respondToDirectFriendRequest(marker.requestId, "reject")}
-                className="rounded bg-[#404249] hover:bg-[#404249] px-2 py-1 text-[11px] disabled:opacity-60"
+                className="rounded bg-[var(--tk-bg-active)] hover:bg-[var(--tk-bg-active)] px-2 py-1 text-[11px] disabled:opacity-60"
               >
                 Rejeitar
               </button>
             </div>
           )}
-          {isRequester && <p className="text-[#949BA4]">Aguardando resposta do destinatário.</p>}
+          {isRequester && <p className="text-[var(--tk-text-subtle)]">Aguardando resposta do destinatário.</p>}
         </div>
       );
     }
 
     return (
-      <div className="mt-1 rounded border border-[#3F4147] bg-[#2B2D31]/70 px-2 py-2 text-xs text-[#B5BAC1]">
+      <div className="mt-1 rounded border border-[var(--tk-border)] bg-[var(--tk-bg-panel)]/70 px-2 py-2 text-xs text-[var(--tk-text-muted)]">
         {marker.status === "accepted"
           ? "Solicitação de amizade aceita."
           : "Solicitação de amizade rejeitada."}
@@ -5594,7 +5890,7 @@ export function AppShell() {
                 <img
                   src={url}
                   alt="Mídia enviada"
-                  className="max-h-72 rounded border border-[#1F2023]"
+                  className="max-h-72 rounded border border-[var(--tk-line)]"
                 />
               </a>
             );
@@ -5605,7 +5901,7 @@ export function AppShell() {
               <video
                 key={url}
                 controls
-                className="max-h-80 rounded border border-[#1F2023] w-full"
+                className="max-h-80 rounded border border-[var(--tk-line)] w-full"
                 src={url}
               />
             );
@@ -5642,16 +5938,16 @@ export function AppShell() {
             target="_blank"
             rel="noopener noreferrer"
             onClick={(event) => onAttachmentDownloadClick(event, attachment)}
-            className="block rounded border border-[#1F2023] bg-[#2B2D31] px-2 py-2 hover:bg-[#383A40]"
+            className="block rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)] px-2 py-2 hover:bg-[var(--tk-bg-elev)]"
           >
             <div className="font-medium break-all">{attachment.name}</div>
-            <div className="text-xs text-[#949BA4]">
+            <div className="text-xs text-[var(--tk-text-subtle)]">
               {getFileExtensionLabel(attachment.name)}
               {typeof attachment.size === "number" && Number.isFinite(attachment.size)
                 ? ` · ${formatBytes(attachment.size)}`
                 : " · tamanho não informado"}
             </div>
-            <div className="text-xs text-[#80848E]">Clique para baixar arquivo</div>
+            <div className="text-xs text-[var(--tk-text-faint)]">Clique para baixar arquivo</div>
           </a>
         ))}
       </div>
@@ -5669,12 +5965,12 @@ export function AppShell() {
           if (isDirectImageUrl(entry.url)) {
             return (
               <a key={entry.url} href={entry.url} target="_blank" rel="noopener noreferrer" className="block">
-                <img src={entry.url} alt={entry.name} className="max-h-72 rounded border border-[#1F2023]" />
+                <img src={entry.url} alt={entry.name} className="max-h-72 rounded border border-[var(--tk-line)]" />
               </a>
             );
           }
           if (isDirectVideoUrl(entry.url)) {
-            return <video key={entry.url} controls className="max-h-80 rounded border border-[#1F2023] w-full" src={entry.url} />;
+            return <video key={entry.url} controls className="max-h-80 rounded border border-[var(--tk-line)] w-full" src={entry.url} />;
           }
           return <audio key={entry.url} controls className="w-full" src={entry.url} />;
         })}
@@ -5697,16 +5993,16 @@ export function AppShell() {
             target="_blank"
             rel="noopener noreferrer"
             onClick={(event) => onAttachmentDownloadClick(event, attachment)}
-            className="block rounded border border-[#1F2023] bg-[#2B2D31] px-2 py-2 hover:bg-[#383A40]"
+            className="block rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)] px-2 py-2 hover:bg-[var(--tk-bg-elev)]"
           >
             <div className="font-medium break-all">{attachment.name}</div>
-            <div className="text-xs text-[#949BA4]">
+            <div className="text-xs text-[var(--tk-text-subtle)]">
               {getFileExtensionLabel(attachment.name)}
               {typeof attachment.size === "number" && Number.isFinite(attachment.size)
                 ? ` · ${formatBytes(attachment.size)}`
                 : " · tamanho não informado"}
             </div>
-            <div className="text-xs text-[#80848E]">Clique para baixar arquivo</div>
+            <div className="text-xs text-[var(--tk-text-faint)]">Clique para baixar arquivo</div>
           </a>
         ))}
       </div>
@@ -5850,6 +6146,10 @@ export function AppShell() {
       return;
     }
 
+    // Snapshot before disconnect: a new room must inherit the current mute state.
+    const microphoneEnabled = activeVoiceChannelId
+      ? (voiceMicrophoneEnabledRef.current ?? joinWithMicEnabled)
+      : joinWithMicEnabled;
     if (activeVoiceChannelId && activeVoiceChannelId !== channel.id) {
       handleVoiceLeave();
     }
@@ -5880,13 +6180,16 @@ export function AppShell() {
       return;
     }
 
+    voiceMicrophoneEnabledRef.current = microphoneEnabled;
+    setVoiceEntryMicEnabled(microphoneEnabled);
+    voiceTokenRef.current = payload.token;
     setVoiceToken(payload.token);
     setVoiceServerUrl(payload.serverUrl);
     setActiveVoiceServerId(targetServerId);
     setActiveVoiceChannelId(channel.id);
     setActiveVoiceChannelName(channel.name);
     setSelectedChannelId(channel.id);
-  }, [activeVoiceChannelId, handleVoiceLeave, isAuthenticated, isSecureContextValue, selectedServerId, serverDetails, userId, userName, voiceSessionId]);
+  }, [activeVoiceChannelId, handleVoiceLeave, isAuthenticated, isSecureContextValue, joinWithMicEnabled, selectedServerId, serverDetails, userId, userName, voiceSessionId]);
 
   const handleVoiceRoomDisconnected = useCallback((disconnectedToken: string) => {
     if (voiceTokenRef.current !== disconnectedToken) {
@@ -5943,6 +6246,7 @@ export function AppShell() {
   };
 
   const selectTextChannel = (channelId: string) => {
+    setMobileView("content");
     setSelectedChannelId(channelId);
     // Zera o indicador de mensagens novas deste canal
     setChannelUnreadById((currentValue) => {
@@ -6100,6 +6404,7 @@ export function AppShell() {
   };
 
   const selectVoiceChannel = async (channelId: string) => {
+    setMobileView("content");
     setSelectedChannelId(channelId);
     // Se já está conectado NESSE canal, não faz nada
     if (isVoiceConnected && activeVoiceChannelId === channelId) {
@@ -6118,17 +6423,141 @@ export function AppShell() {
     setTurnstileToken(null);
   };
 
+  // Com a categoria recolhida, continuam visíveis o canal aberto e canais de voz com gente (como no Discord)
+  const isChannelVisibleInCategory = (categoryKey: string, channel: { id: string; type: string }) => {
+    if (!collapsedCategoryIds[categoryKey]) return true;
+    if (channel.id === selectedChannelId) return true;
+    if (channel.type === "voice") {
+      return activeVoiceChannelId === channel.id || (voicePresenceByChannel[channel.id]?.length ?? 0) > 0;
+    }
+    return false;
+  };
+
+  const renderCategoryHeader = (categoryKey: string, label: string, hiddenUnread: number, onContextMenu?: (event: React.MouseEvent) => void) => {
+    const collapsed = !!collapsedCategoryIds[categoryKey];
+    return (
+      <button
+        type="button"
+        onClick={() => toggleCategoryCollapsed(categoryKey)}
+        onContextMenu={onContextMenu}
+        aria-expanded={!collapsed}
+        title={collapsed ? "Expandir categoria" : "Recolher categoria"}
+        className="group/cat neon-section-label w-full text-left text-[13px] font-semibold mb-1.5 px-2 flex items-center gap-2 hover:text-white transition-colors"
+      >
+        <EqualizerGlyph />
+        <span className="truncate">{label}</span>
+        {collapsed && hiddenUnread > 0 && (
+          <span className="h-2 w-2 shrink-0 rounded-full bg-white shadow-[0_0_6px_rgba(255,255,255,0.8)]" title="Mensagens não lidas" />
+        )}
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="3"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+          className={`ml-auto shrink-0 opacity-70 group-hover/cat:opacity-100 transition-transform duration-150 ${collapsed ? "-rotate-90" : ""}`}
+        >
+          <path d="m6 9 6 6 6-6" />
+        </svg>
+      </button>
+    );
+  };
+
+  // Barra do topo no celular: voltar para a lista de canais, título e atalhos
+  const renderMobileTopBar = () => {
+    const isTextChannel = !showSettingsPanel && appMode === "server" && selectedChannel?.type === "text";
+    const title = showSettingsPanel
+      ? "Configurações"
+      : appMode === "direct"
+        ? selectedDirectConversation?.otherUserName ?? "Mensagens diretas"
+        : selectedChannel
+          ? selectedChannel.name
+          : serverDetails?.server.name ?? "Servidor";
+    const iconButtonClass =
+      "h-10 w-10 shrink-0 rounded-full flex items-center justify-center text-[var(--tk-text-muted)] hover:text-white hover:bg-[var(--tk-bg-hover)] active:bg-[var(--tk-bg-active)]";
+
+    return (
+      <div className="h-14 shrink-0 flex items-center gap-1 px-2 border-b border-[var(--tk-line)] bg-[var(--tk-bg-panel)]/90 backdrop-blur z-20">
+        <button
+          type="button"
+          aria-label="Abrir lista de canais"
+          onClick={() => {
+            if (showSettingsPanel) {
+              setShowSettingsPanel(false);
+            }
+            setMobileView("nav");
+          }}
+          className={iconButtonClass}
+        >
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
+            <path d="M4 6h16M4 12h16M4 18h16" />
+          </svg>
+        </button>
+        <div className="min-w-0 flex-1 flex items-center gap-1.5">
+          {isTextChannel && <span className="text-xl text-[var(--tk-text-faint)]">#</span>}
+          {!showSettingsPanel && appMode === "server" && selectedChannel?.type === "voice" && (
+            <span className="text-[var(--tk-accent-soft)]"><EqualizerGlyph /></span>
+          )}
+          <h2 className="truncate text-[17px] font-bold text-white">{title}</h2>
+          {!showSettingsPanel && appMode === "server" && selectedChannel?.type === "voice" && activeVoiceChannelId === selectedChannel.id && (
+            <span className="shrink-0 text-[10px] font-extrabold neon-live">AO VIVO</span>
+          )}
+        </div>
+        {isTextChannel && (
+          <button
+            type="button"
+            aria-label={showChannelSearch ? "Fechar busca" : "Pesquisar mensagens"}
+            aria-pressed={showChannelSearch}
+            onClick={() => setShowChannelSearch((value) => !value)}
+            className={`${iconButtonClass} ${showChannelSearch ? "text-white bg-[var(--tk-bg-active)]" : ""}`}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" />
+              <path d="m20 20-3.5-3.5" />
+            </svg>
+          </button>
+        )}
+        {!showSettingsPanel && (appMode === "server" || selectedDirectConversation) && (
+          <button
+            type="button"
+            aria-label={appMode === "server" ? "Membros" : "Perfil da conversa"}
+            onClick={() => setIsMembersPanelOpen((value) => !value)}
+            className={`${iconButtonClass} ${isMembersPanelOpen ? "text-white bg-[var(--tk-bg-active)]" : ""}`}
+          >
+            <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="9" cy="8" r="3.5" />
+              <path d="M2.5 20a6.5 6.5 0 0 1 13 0" />
+              <path d="M16 4.5a3.5 3.5 0 0 1 0 7M21.5 20a6.5 6.5 0 0 0-4-6" />
+            </svg>
+          </button>
+        )}
+      </div>
+    );
+  };
+
+  const countHiddenUnread = (categoryKey: string, channels: Array<{ id: string; type: string }>) =>
+    collapsedCategoryIds[categoryKey]
+      ? channels.reduce(
+          (sum, channel) => (isChannelVisibleInCategory(categoryKey, channel) ? sum : sum + (channelUnreadById[channel.id] ?? 0)),
+          0,
+        )
+      : 0;
+
   return (
-    <div className="min-h-screen bg-[#313338] text-[#dbdee1]">
+    <div className="min-h-screen bg-[var(--tk-bg-main)] text-[var(--tk-text)]">
       {!isAuthenticated && (
         <div className="mx-auto flex h-screen max-w-5xl items-center">
-          <div className="w-full overflow-hidden rounded-md bg-[#313338] shadow-2xl">
+          <div className="w-full overflow-hidden rounded-md bg-[var(--tk-bg-main)] shadow-2xl">
             <div className="grid min-h-[560px] grid-cols-1 md:grid-cols-2">
-              <section className="flex items-center justify-center bg-[#313338] px-8 py-10 md:px-12">
+              <section className="flex items-center justify-center bg-[var(--tk-bg-main)] px-8 py-10 md:px-12">
                 <div className="w-full max-w-sm">
                   <div className="mb-6 space-y-1">
-                    <p className="text-xs uppercase tracking-[0.2em] text-[#949BA4]">{appName}</p>
-                    <h1 className="text-4xl font-semibold text-[#F2F3F5] transition-all duration-300">
+                    <p className="text-xs uppercase tracking-[0.2em] text-[var(--tk-text-subtle)]">{appName}</p>
+                    <h1 className="text-4xl font-semibold text-[var(--tk-text-strong)] transition-all duration-300">
                       {authMode === "login" ? "Fazer login" : "Criar conta"}
                     </h1>
                   </div>
@@ -6145,7 +6574,7 @@ export function AppShell() {
                   <form onSubmit={handleAuth} className="space-y-3">
                     <div className="grid gap-3">
                       <input
-                        className="h-10 w-full rounded-[3px] border-none bg-[#1E1F22] px-3 text-sm outline-none text-[#DBDEE1] placeholder:text-[#87898C]"
+                        className="h-10 w-full rounded-[3px] border-none bg-[var(--tk-bg-deep)] px-3 text-sm outline-none text-[var(--tk-text)] placeholder:text-[var(--tk-text-faint)]"
                         value={authUsername}
                         onChange={(event) => setAuthUsername(event.target.value)}
                         placeholder={authMode === "login" ? "Usuário" : "Usuário para login"}
@@ -6157,7 +6586,7 @@ export function AppShell() {
                         }`}
                       >
                         <input
-                          className="h-10 w-full rounded-[3px] border-none bg-[#1E1F22] px-3 text-sm outline-none text-[#DBDEE1] placeholder:text-[#87898C]"
+                          className="h-10 w-full rounded-[3px] border-none bg-[var(--tk-bg-deep)] px-3 text-sm outline-none text-[var(--tk-text)] placeholder:text-[var(--tk-text-faint)]"
                           value={userName}
                           onChange={(event) => setUserName(event.target.value)}
                           placeholder="Nome de exibição"
@@ -6166,7 +6595,7 @@ export function AppShell() {
 
                       <input
                         type="password"
-                        className="h-10 w-full rounded-[3px] border-none bg-[#1E1F22] px-3 text-sm outline-none text-[#DBDEE1] placeholder:text-[#87898C]"
+                        className="h-10 w-full rounded-[3px] border-none bg-[var(--tk-bg-deep)] px-3 text-sm outline-none text-[var(--tk-text)] placeholder:text-[var(--tk-text-faint)]"
                         value={password}
                         onChange={(event) => setPassword(event.target.value)}
                         placeholder="Senha"
@@ -6179,7 +6608,7 @@ export function AppShell() {
                       >
                         <input
                           type="password"
-                          className="h-10 w-full rounded-[3px] border-none bg-[#1E1F22] px-3 text-sm outline-none text-[#DBDEE1] placeholder:text-[#87898C]"
+                          className="h-10 w-full rounded-[3px] border-none bg-[var(--tk-bg-deep)] px-3 text-sm outline-none text-[var(--tk-text)] placeholder:text-[var(--tk-text-faint)]"
                           value={confirmPassword}
                           onChange={(event) => setConfirmPassword(event.target.value)}
                           placeholder="Confirmar senha"
@@ -6198,9 +6627,9 @@ export function AppShell() {
                               try { window.localStorage.removeItem("twinslkit:savedCredentials"); } catch {}
                             }
                           }}
-                          className="h-4 w-4 rounded border-[#4E5058] bg-[#1E1F22] accent-[#5865F2]"
+                          className="h-4 w-4 rounded border-[var(--tk-border-strong)] bg-[var(--tk-bg-deep)] accent-[var(--tk-accent)]"
                         />
-                        <span className="text-sm text-[#B5BAC1]">Lembrar usuário e senha</span>
+                        <span className="text-sm text-[var(--tk-text-muted)]">Lembrar usuário e senha</span>
                       </label>
                     )}
 
@@ -6213,7 +6642,7 @@ export function AppShell() {
                     <button
                       type="submit"
                       disabled={busy}
-                      className="mt-1 h-11 w-full rounded-[3px] bg-[#5865F2] px-3 text-sm font-medium text-white transition hover:bg-[#4752C4] disabled:opacity-60"
+                      className="mt-1 h-11 w-full rounded-[3px] bg-[var(--tk-accent)] px-3 text-sm font-medium text-white transition hover:bg-[var(--tk-accent-hover)] disabled:opacity-60"
                     >
                       {authMode === "login" ? "Entrar" : "Cadastrar"}
                     </button>
@@ -6221,9 +6650,9 @@ export function AppShell() {
                 </div>
               </section>
 
-              <section className="relative overflow-hidden bg-[#5865F2] text-white">
+              <section className="relative overflow-hidden bg-[var(--tk-accent)] text-white">
                 <div
-                  className={`absolute -bottom-16 h-64 w-64 rounded-full bg-[#5865F2]/40 blur-3xl transition-all duration-700 ${
+                  className={`absolute -bottom-16 h-64 w-64 rounded-full bg-[var(--tk-accent)]/40 blur-3xl transition-all duration-700 ${
                     authMode === "login" ? "right-8" : "left-8"
                   }`}
                 />
@@ -6257,9 +6686,9 @@ export function AppShell() {
       )}
 
       {isAuthenticated && (
-      <div className={`relative h-screen overflow-hidden grid ${isMembersPanelOpen ? "max-w-[2400px] mx-auto" : ""}`} style={{ gridTemplateColumns: `72px ${sidebarWidth}px 1fr` }}>
-        <aside className="bg-[#1E1F22] pt-3 pb-3 flex flex-col items-center gap-2 min-h-0 overflow-hidden">
-          <div className="h-12 w-12 rounded-[24px] bg-[#5865F2] hover:rounded-[16px] transition-all duration-200 flex items-center justify-center font-semibold text-sm cursor-pointer">{appInitials}</div>
+      <div className={`relative h-[100dvh] overflow-hidden grid ${isMembersPanelOpen && !isMobile ? "max-w-[2400px] mx-auto" : ""}`} style={{ gridTemplateColumns: isMobile ? (mobileView === "nav" ? "72px minmax(0, 1fr)" : "minmax(0, 1fr)") : `72px ${sidebarWidth}px 1fr` }}>
+        <aside className={`neon-rail pt-3 flex flex-col items-center gap-2 min-h-0 overflow-hidden ${isMobile ? (mobileView === "nav" ? "pb-20" : "hidden") : "pb-3"}`}>
+          <div className="h-12 w-12 rounded-[24px] neon-active hover:rounded-[16px] transition-all duration-200 flex items-center justify-center font-semibold text-sm cursor-pointer">{appInitials}</div>
           <button
             type="button"
             onClick={() => {
@@ -6268,8 +6697,8 @@ export function AppShell() {
             }}
             className={`mx-auto block h-12 w-12 text-xs font-semibold transition-all duration-200 ${
               appMode === "direct"
-                ? "bg-[#5865F2] text-white rounded-[16px]"
-                : "bg-[#313338] text-[#dcddde] hover:bg-[#5865F2] hover:text-white rounded-[24px] hover:rounded-[16px]"
+                ? "neon-active text-white rounded-[16px]"
+                : "bg-[var(--tk-bg-main)] text-[var(--tk-text)] hover:bg-[var(--tk-accent)] hover:text-white rounded-[24px] hover:rounded-[16px]"
             }`}
             title="Mensagens diretas"
           >
@@ -6282,7 +6711,7 @@ export function AppShell() {
               )}
             </span>
           </button>
-          <div className="h-[2px] w-8 bg-[#3F4147] rounded-full mx-auto" />
+          <div className="h-[2px] w-8 bg-[var(--tk-border)] rounded-full mx-auto" />
           <div
             className="no-scrollbar flex-1 w-full overflow-y-auto space-y-2 px-3"
             onScroll={(event) => {
@@ -6310,8 +6739,8 @@ export function AppShell() {
                 }}
                 className={`mx-auto block h-12 w-12 text-xs font-semibold transition-all duration-200 ${
                   appMode === "server" && selectedServerId === server.id
-                    ? "bg-[#5865F2] text-white rounded-[16px]"
-                    : "bg-[#313338] text-[#dcddde] hover:bg-[#5865F2] hover:text-white rounded-[24px] hover:rounded-[16px]"
+                    ? "neon-active text-white rounded-[16px]"
+                    : "bg-[var(--tk-bg-main)] text-[var(--tk-text)] hover:bg-[var(--tk-accent)] hover:text-white rounded-[24px] hover:rounded-[16px]"
                 }`}
               >
                 <span className="relative inline-flex h-full w-full items-center justify-center">
@@ -6333,27 +6762,38 @@ export function AppShell() {
               </button>
             ))}
             {hasMoreVisibleServers && (
-              <p className="px-1 text-center text-[10px] text-[#80848E]">Role para carregar mais servidores...</p>
+              <p className="px-1 text-center text-[10px] text-[var(--tk-text-faint)]">Role para carregar mais servidores...</p>
             )}
           </div>
           <button
             type="button"
             onClick={() => setShowCreateServerModal(true)}
             disabled={busy}
-            className="h-12 w-12 rounded-[24px] hover:rounded-[16px] bg-[#313338] hover:bg-[#23A559] text-[#23A559] hover:text-white text-2xl transition-all duration-200 disabled:opacity-60 mx-auto flex items-center justify-center"
+            className="h-12 w-12 rounded-[24px] hover:rounded-[16px] bg-[var(--tk-bg-main)] hover:bg-[var(--tk-green)] text-[var(--tk-green)] hover:text-white text-2xl transition-all duration-200 disabled:opacity-60 mx-auto flex items-center justify-center"
           >
             +
           </button>
         </aside>
 
-        <aside className="bg-[#2B2D31] flex flex-col min-h-0 relative">
+        <aside className={`neon-sidebar flex flex-col min-h-0 relative ${isMobile ? (mobileView === "nav" ? "pb-16" : "hidden") : ""}`}>
           <div
             onMouseDown={handleSidebarMouseDown}
-            className="absolute top-0 right-0 w-[3px] h-full cursor-col-resize z-20 hover:bg-[#5865F2] transition-colors duration-150"
+            className="max-md:hidden absolute top-0 right-0 w-[3px] h-full cursor-col-resize z-20 hover:bg-[var(--tk-accent)] transition-colors duration-150"
             style={{ touchAction: "none" }}
           />
-          <div className="h-12 px-4 flex items-center border-b border-[#1F2023] shadow-sm shrink-0 z-10">
-            <h2 className="font-semibold text-[15px] text-white truncate">
+          <div className="h-16 px-4 flex items-center gap-3 border-b border-[var(--tk-line)] shrink-0 z-10">
+            {appMode === "server" && serverDetails?.server.avatarUrl ? (
+              <img
+                src={serverDetails.server.avatarUrl}
+                alt={serverDetails.server.name}
+                className="h-10 w-10 rounded-full object-cover shrink-0 ring-2 ring-[var(--tk-accent)] shadow-[0_0_14px_var(--tk-accent-glow)]"
+              />
+            ) : (
+              <span className="h-10 w-10 rounded-full neon-active flex items-center justify-center text-xs font-bold shrink-0">
+                {appMode === "direct" ? "DM" : (serverDetails?.server.name ?? appInitials).slice(0, 2).toUpperCase()}
+              </span>
+            )}
+            <h2 className="neon-title font-extrabold text-[18px] leading-tight truncate">
               {appMode === "direct" ? "Mensagens diretas" : serverDetails?.server.name ?? "Sem servidor"}
             </h2>
           </div>
@@ -6377,7 +6817,7 @@ export function AppShell() {
             }}
           >
             {appMode === "server" && serverDetails?.server.serverBannerUrl && (
-              <div className="w-full overflow-hidden bg-[#1E1F22] shrink-0" style={{ minHeight: 120, maxHeight: 180 }}>
+              <div className="w-full overflow-hidden bg-[var(--tk-bg-deep)] shrink-0" style={{ minHeight: 120, maxHeight: 180 }}>
                 <img
                   src={serverDetails.server.serverBannerUrl}
                   alt={`Banner do servidor ${serverDetails.server.name}`}
@@ -6389,21 +6829,21 @@ export function AppShell() {
             <div className="pt-3 px-2 space-y-4">
             {visibleCategorizedChannelGroups.grouped.map((group) => (
               <div key={group.category.id}>
-                <div
-                  className="text-[11px] font-bold uppercase tracking-wide text-[#949BA4] mb-1 px-1 flex items-center"
-                  onContextMenu={(event) => {
+                {renderCategoryHeader(
+                  group.category.id,
+                  group.category.name,
+                  countHiddenUnread(group.category.id, group.text),
+                  (event) => {
                     if (!canManageChannels) {
                       return;
                     }
                     event.preventDefault();
                     event.stopPropagation();
                     setCategoryContextMenu({ categoryId: group.category.id, x: event.clientX, y: event.clientY });
-                  }}
-                >
-                  {group.category.name.toUpperCase()}
-                </div>
+                  },
+                )}
                 <div className="space-y-1">
-                  {group.text.map((channel) => (
+                  {group.text.filter((channel) => isChannelVisibleInCategory(group.category.id, channel)).map((channel) => (
                     <button
                       key={channel.id}
                       onContextMenu={(event) => {
@@ -6420,19 +6860,19 @@ export function AppShell() {
                         }
                         selectTextChannel(channel.id);
                       }}
-                      className={`w-full text-left rounded-[4px] px-2 py-[6px] text-[15px] flex items-center justify-between gap-2 ${
-                        selectedChannelId === channel.id ? "bg-[#404249] text-white" : "text-[#949BA4] hover:bg-[#35373C] hover:text-[#DBDEE1]"
+                      className={`w-full text-left rounded-lg px-3 py-[7px] text-[15px] neon-item flex items-center justify-between gap-2 ${
+                        selectedChannelId === channel.id ? "neon-active font-semibold" : "text-[var(--tk-text-muted)] hover:bg-[var(--tk-bg-hover)] hover:text-white"
                       }`}
                     >
-                      <span className="truncate"># {channel.name} {!canCurrentRoleAccessChannel(channel) ? "🔒" : ""}</span>
+                      <span className="truncate inline-flex items-center gap-1"># {channel.name} {!canCurrentRoleAccessChannel(channel) && <VoiceChannelIcon locked />}</span>
                       {(channelUnreadById[channel.id] ?? 0) > 0 && selectedChannelId !== channel.id && (
-                        <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-[#5865F2] px-1 text-[10px] font-bold text-white">
+                        <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--tk-accent)] px-1 text-[10px] font-bold text-white">
                           {(channelUnreadById[channel.id] ?? 0) > 99 ? "99+" : channelUnreadById[channel.id]}
                         </span>
                       )}
                     </button>
                   ))}
-                  {group.voice.map((channel) => (
+                  {group.voice.filter((channel) => isChannelVisibleInCategory(group.category.id, channel)).map((channel) => (
                     <div key={channel.id} className="space-y-1">
                     <button
                       onContextMenu={(event) => {
@@ -6449,12 +6889,12 @@ export function AppShell() {
                         }
                         void selectVoiceChannel(channel.id);
                       }}
-                      className={`w-full text-left rounded-[4px] px-2 py-[6px] text-[15px] flex items-center justify-between ${
-                        selectedChannelId === channel.id ? "bg-[#404249] text-white" : "text-[#949BA4] hover:bg-[#35373C] hover:text-[#DBDEE1]"
+                      className={`w-full text-left rounded-lg px-3 py-[7px] text-[15px] neon-item flex items-center justify-between ${
+                        selectedChannelId === channel.id ? "neon-active font-semibold" : "text-[var(--tk-text-muted)] hover:bg-[var(--tk-bg-hover)] hover:text-white"
                       }`}
                     >
-                      <span>🔊 {channel.name} {!canCurrentRoleAccessChannel(channel) ? "🔒" : ""}</span>
-                      {activeVoiceChannelId === channel.id && <span className="text-[10px] text-[#23A559] font-semibold">AO VIVO</span>}
+                      <span className="inline-flex items-center gap-1"><VoiceChannelIcon locked={!canCurrentRoleAccessChannel(channel)} />{channel.name}</span>
+                      {activeVoiceChannelId === channel.id && <span className="inline-flex items-center gap-1.5 text-[10px] font-bold neon-live">AO VIVO<span className="neon-signal"><i /><i /><i /><i /></span></span>}
                     </button>
                     {(voicePresenceByChannel[channel.id]?.length ?? 0) > 0 && (
                       <div className="ml-5 mt-1 space-y-1">
@@ -6463,7 +6903,7 @@ export function AppShell() {
                           const displayName = memberInfo?.name || voiceMember.userName || voiceMember.userId;
 
                           return (
-                            <div key={`${channel.id}-${voiceMember.identity}`} className="flex items-center gap-2 text-xs text-[#949BA4]">
+                            <div key={`${channel.id}-${voiceMember.identity}`} className="flex items-center gap-2 text-xs text-[var(--tk-text-subtle)]">
                               {memberInfo?.avatarUrl ? (
                                 <img
                                   src={memberInfo.avatarUrl}
@@ -6471,19 +6911,13 @@ export function AppShell() {
                                   className="h-5 w-5 rounded-full object-cover"
                                 />
                               ) : (
-                                <span className="text-[#80848E]">•</span>
+                                <span className="text-[var(--tk-text-faint)]">•</span>
                               )}
                               <span className="truncate max-w-[90px]" title={displayName}>{displayName}</span>
                               <span className="shrink-0 flex items-center gap-0.5">
-                                <span title={voiceMember.micEnabled ? "Microfone ativo" : "Microfone silenciado"}>
-                                  {voiceMember.micEnabled ? "🎤" : "🔇"}
-                                </span>
-                                <span title={voiceMember.cameraEnabled ? "Câmera ativa" : "Câmera inativa"}>
-                                  {voiceMember.cameraEnabled ? "📷" : "🚫"}
-                                </span>
-                                <span title={(voiceListeningByUserId[voiceMember.userId] ?? true) ? "Escutando" : "Sem áudio da sala"}>
-                                  {(voiceListeningByUserId[voiceMember.userId] ?? true) ? "👂" : "🙉"}
-                                </span>
+                                <VoiceStatusIcon type="mic" active={voiceMember.micEnabled ?? false} />
+                                <VoiceStatusIcon type="camera" active={voiceMember.cameraEnabled ?? false} />
+                                <VoiceStatusIcon type="listen" active={voiceListeningByUserId[voiceMember.userId] ?? true} />
                               </span>
                             </div>
                           );
@@ -6498,9 +6932,13 @@ export function AppShell() {
 
             {(visibleCategorizedChannelGroups.uncategorizedText.length > 0 || visibleCategorizedChannelGroups.uncategorizedVoice.length > 0) && (
               <div>
-                <div className="text-[11px] font-bold uppercase tracking-wide text-[#949BA4] mb-1 px-1 flex items-center">SEM CATEGORIA</div>
+                {renderCategoryHeader(
+                  "__uncategorized",
+                  "Sem categoria",
+                  countHiddenUnread("__uncategorized", visibleCategorizedChannelGroups.uncategorizedText),
+                )}
                 <div className="space-y-1">
-                  {visibleCategorizedChannelGroups.uncategorizedText.map((channel) => (
+                  {visibleCategorizedChannelGroups.uncategorizedText.filter((channel) => isChannelVisibleInCategory("__uncategorized", channel)).map((channel) => (
                     <button
                       key={channel.id}
                       onContextMenu={(event) => {
@@ -6517,19 +6955,19 @@ export function AppShell() {
                         }
                         selectTextChannel(channel.id);
                       }}
-                      className={`w-full text-left rounded-[4px] px-2 py-[6px] text-[15px] flex items-center justify-between gap-2 ${
-                        selectedChannelId === channel.id ? "bg-[#404249] text-white" : "text-[#949BA4] hover:bg-[#35373C] hover:text-[#DBDEE1]"
+                      className={`w-full text-left rounded-lg px-3 py-[7px] text-[15px] neon-item flex items-center justify-between gap-2 ${
+                        selectedChannelId === channel.id ? "neon-active font-semibold" : "text-[var(--tk-text-muted)] hover:bg-[var(--tk-bg-hover)] hover:text-white"
                       }`}
                     >
-                      <span className="truncate"># {channel.name} {!canCurrentRoleAccessChannel(channel) ? "🔒" : ""}</span>
+                      <span className="truncate inline-flex items-center gap-1"># {channel.name} {!canCurrentRoleAccessChannel(channel) && <VoiceChannelIcon locked />}</span>
                       {(channelUnreadById[channel.id] ?? 0) > 0 && selectedChannelId !== channel.id && (
-                        <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-[#5865F2] px-1 text-[10px] font-bold text-white">
+                        <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--tk-accent)] px-1 text-[10px] font-bold text-white">
                           {(channelUnreadById[channel.id] ?? 0) > 99 ? "99+" : channelUnreadById[channel.id]}
                         </span>
                       )}
                     </button>
                   ))}
-                  {visibleCategorizedChannelGroups.uncategorizedVoice.map((channel) => (
+                  {visibleCategorizedChannelGroups.uncategorizedVoice.filter((channel) => isChannelVisibleInCategory("__uncategorized", channel)).map((channel) => (
                     <div key={channel.id} className="space-y-1">
                     <button
                       onContextMenu={(event) => {
@@ -6546,12 +6984,12 @@ export function AppShell() {
                         }
                         void selectVoiceChannel(channel.id);
                       }}
-                      className={`w-full text-left rounded-[4px] px-2 py-[6px] text-[15px] flex items-center justify-between ${
-                        selectedChannelId === channel.id ? "bg-[#404249] text-white" : "text-[#949BA4] hover:bg-[#35373C] hover:text-[#DBDEE1]"
+                      className={`w-full text-left rounded-lg px-3 py-[7px] text-[15px] neon-item flex items-center justify-between ${
+                        selectedChannelId === channel.id ? "neon-active font-semibold" : "text-[var(--tk-text-muted)] hover:bg-[var(--tk-bg-hover)] hover:text-white"
                       }`}
                     >
-                      <span>🔊 {channel.name} {!canCurrentRoleAccessChannel(channel) ? "🔒" : ""}</span>
-                      {activeVoiceChannelId === channel.id && <span className="text-[10px] text-[#23A559] font-semibold">AO VIVO</span>}
+                      <span className="inline-flex items-center gap-1"><VoiceChannelIcon locked={!canCurrentRoleAccessChannel(channel)} />{channel.name}</span>
+                      {activeVoiceChannelId === channel.id && <span className="inline-flex items-center gap-1.5 text-[10px] font-bold neon-live">AO VIVO<span className="neon-signal"><i /><i /><i /><i /></span></span>}
                     </button>
                     {(voicePresenceByChannel[channel.id]?.length ?? 0) > 0 && (
                       <div className="ml-5 mt-1 space-y-1">
@@ -6560,7 +6998,7 @@ export function AppShell() {
                           const displayName = memberInfo?.name || voiceMember.userName || voiceMember.userId;
 
                           return (
-                            <div key={`${channel.id}-${voiceMember.identity}`} className="flex items-center gap-2 text-xs text-[#949BA4]">
+                            <div key={`${channel.id}-${voiceMember.identity}`} className="flex items-center gap-2 text-xs text-[var(--tk-text-subtle)]">
                               {memberInfo?.avatarUrl ? (
                                 <img
                                   src={memberInfo.avatarUrl}
@@ -6568,19 +7006,13 @@ export function AppShell() {
                                   className="h-5 w-5 rounded-full object-cover"
                                 />
                               ) : (
-                                <span className="text-[#80848E]">•</span>
+                                <span className="text-[var(--tk-text-faint)]">•</span>
                               )}
                               <span className="truncate max-w-[90px]" title={displayName}>{displayName}</span>
                               <span className="shrink-0 flex items-center gap-0.5">
-                                <span title={voiceMember.micEnabled ? "Microfone ativo" : "Microfone silenciado"}>
-                                  {voiceMember.micEnabled ? "🎤" : "🔇"}
-                                </span>
-                                <span title={voiceMember.cameraEnabled ? "Câmera ativa" : "Câmera inativa"}>
-                                  {voiceMember.cameraEnabled ? "📷" : "🚫"}
-                                </span>
-                                <span title={(voiceListeningByUserId[voiceMember.userId] ?? true) ? "Escutando" : "Sem áudio da sala"}>
-                                  {(voiceListeningByUserId[voiceMember.userId] ?? true) ? "👂" : "🙉"}
-                                </span>
+                                <VoiceStatusIcon type="mic" active={voiceMember.micEnabled ?? false} />
+                                <VoiceStatusIcon type="camera" active={voiceMember.cameraEnabled ?? false} />
+                                <VoiceStatusIcon type="listen" active={voiceListeningByUserId[voiceMember.userId] ?? true} />
                               </span>
                             </div>
                           );
@@ -6594,11 +7026,11 @@ export function AppShell() {
             )}
 
             {totalServerChannelCount === 0 && (
-              <p className="text-xs text-[#80848E]">Sem canais. Clique com botão direito para criar.</p>
+              <p className="text-xs text-[var(--tk-text-faint)]">Sem canais. Clique com botão direito para criar.</p>
             )}
 
             {hasMoreVisibleServerChannels && (
-              <p className="text-xs text-[#80848E] text-center py-1">Role para carregar mais canais...</p>
+              <p className="text-xs text-[var(--tk-text-faint)] text-center py-1">Role para carregar mais canais...</p>
             )}
             </div>
           </div>
@@ -6613,21 +7045,21 @@ export function AppShell() {
                 }
               }}
             >
-              <form onSubmit={addDirectFriendById} className="rounded-[4px] bg-[#1E1F22] p-2.5 space-y-2 mx-0">
-                <p className="text-xs text-[#949BA4]">Adicionar amigo por userId</p>
+              <form onSubmit={addDirectFriendById} className="rounded-[4px] bg-[var(--tk-bg-deep)] p-2.5 space-y-2 mx-0">
+                <p className="text-xs text-[var(--tk-text-subtle)]">Adicionar amigo por userId</p>
                 <div className="flex items-center gap-2">
                   <input
                     type="text"
                     value={newDirectFriendUserId}
                     onChange={(event) => setNewDirectFriendUserId(event.target.value)}
                     placeholder="ID do usuário"
-                    className="flex-1 rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-xs"
+                    className="flex-1 rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-xs"
                     disabled={busy}
                   />
                   <button
                     type="submit"
                     disabled={busy || !newDirectFriendUserId.trim()}
-                    className="rounded bg-[#5865F2] hover:bg-[#5865F2] px-2 py-1 text-xs disabled:opacity-60"
+                    className="rounded bg-[var(--tk-accent)] hover:bg-[var(--tk-accent)] px-2 py-1 text-xs disabled:opacity-60"
                   >
                     Adicionar
                   </button>
@@ -6636,7 +7068,7 @@ export function AppShell() {
               <button
                 type="button"
                 onClick={() => setShowDirectFriendsModal(true)}
-                className="w-full rounded border border-[#3F4147] bg-[#383A40]/70 hover:bg-[#404249] px-2 py-1.5 text-xs"
+                className="w-full rounded border border-[var(--tk-border)] bg-[var(--tk-bg-elev)]/70 hover:bg-[var(--tk-bg-active)] px-2 py-1.5 text-xs"
               >
                 Ver lista de amigos ({directFriends.length})
               </button>
@@ -6656,8 +7088,8 @@ export function AppShell() {
                   onClick={() => selectDirectConversation(conversation.id)}
                   className={`w-full text-left rounded-[4px] px-2 py-1.5 ${
                     selectedDirectConversationId === conversation.id
-                      ? "bg-[#404249] text-white"
-                      : "text-[#949BA4] hover:bg-[#35373C] hover:text-[#DBDEE1]"
+                      ? "neon-active"
+                      : "text-[var(--tk-text-subtle)] hover:bg-[var(--tk-bg-hover)] hover:text-[var(--tk-text)]"
                   }`}
                 >
                   <div className="flex items-center gap-2">
@@ -6665,10 +7097,10 @@ export function AppShell() {
                       <img
                         src={conversation.otherUserAvatarUrl}
                         alt={conversation.otherUserName}
-                        className="h-7 w-7 rounded-full object-cover border border-[#3F4147]"
+                        className="h-7 w-7 rounded-full object-cover border border-[var(--tk-border)]"
                       />
                     ) : (
-                      <div className="h-7 w-7 rounded-full border border-[#3F4147] bg-[#383A40] flex items-center justify-center text-[10px] text-[#B5BAC1]">
+                      <div className="h-7 w-7 rounded-full border border-[var(--tk-border)] bg-[var(--tk-bg-elev)] flex items-center justify-center text-[10px] text-[var(--tk-text-muted)]">
                         DM
                       </div>
                     )}
@@ -6678,7 +7110,7 @@ export function AppShell() {
                         style={conversation.otherUserDisplayNameStyle}
                         className="text-sm truncate"
                       />
-                      <p className="text-[11px] text-[#949BA4] truncate">
+                      <p className="text-[11px] text-[var(--tk-text-subtle)] truncate">
                         {(() => {
                           const marker = parseDirectFriendRequestMarker(conversation.lastMessagePreview ?? "");
                           if (!marker) {
@@ -6706,25 +7138,25 @@ export function AppShell() {
                 </button>
               ))}
               {directConversations.length === 0 && (
-                <p className="text-xs text-[#80848E]">Sem conversas diretas. Clique com botão direito em um membro para iniciar.</p>
+                <p className="text-xs text-[var(--tk-text-faint)]">Sem conversas diretas. Clique com botão direito em um membro para iniciar.</p>
               )}
 
               {hasMoreVisibleDirectConversations && (
-                <p className="text-xs text-[#80848E] text-center py-1">Role para carregar mais conversas...</p>
+                <p className="text-xs text-[var(--tk-text-faint)] text-center py-1">Role para carregar mais conversas...</p>
               )}
             </div>
           )}
 
-          <div className="pt-3 border-t border-[#1F2023] mt-3 space-y-2">
+          <div className="neon-card m-2 mt-3 p-2.5 space-y-2">
             <div className="flex items-center gap-2">
               {userAvatarUrl ? (
                 <img
                   src={userAvatarUrl}
                   alt={userName}
-                  className="h-8 w-8 rounded-full object-cover border border-[#3F4147]"
+                  className="h-8 w-8 rounded-full object-cover border border-[var(--tk-border)]"
                 />
               ) : (
-                <div className="h-8 w-8 rounded-full bg-[#5865F2] flex items-center justify-center text-[10px] text-white font-semibold">
+                <div className="h-8 w-8 rounded-full bg-[var(--tk-accent)] flex items-center justify-center text-[10px] text-white font-semibold">
                   {userName.slice(0, 2).toUpperCase()}
                 </div>
               )}
@@ -6736,7 +7168,7 @@ export function AppShell() {
                     className="text-sm truncate block"
                   />
                 </div>
-                <p className="text-[11px] text-[#949BA4] truncate">{userId}</p>
+                <p className="text-[11px] text-[var(--tk-text-subtle)] truncate">{userId}</p>
               </div>
             </div>
             <div className="grid grid-cols-2 gap-2">
@@ -6750,14 +7182,14 @@ export function AppShell() {
                   setSettingsPanelMode("all");
                   setShowSettingsPanel(true);
                 }}
-                className="rounded-[3px] bg-transparent hover:bg-[#404249] px-2 py-1 text-xs text-[#B5BAC1] hover:text-[#DBDEE1]"
+                className="rounded-[3px] bg-transparent hover:bg-[var(--tk-bg-active)] px-2 py-1 text-xs text-[var(--tk-text-muted)] hover:text-[var(--tk-text)]"
               >
                 Configurações
               </button>
               <button
                 type="button"
                 onClick={logout}
-                className="rounded-[3px] bg-transparent hover:bg-[#404249] px-2 py-1 text-xs text-[#B5BAC1] hover:text-[#DBDEE1]"
+                className="rounded-[3px] bg-transparent hover:bg-[var(--tk-bg-active)] px-2 py-1 text-xs text-[var(--tk-text-muted)] hover:text-[var(--tk-text)]"
               >
                 Sair
               </button>
@@ -6765,10 +7197,11 @@ export function AppShell() {
           </div>
         </aside>
 
-        <div className="flex min-h-0">
-        <main className="flex-1 min-w-0 bg-[#313338] flex flex-col min-h-0 relative">
+        <div className={`flex min-h-0 min-w-0 ${isMobile && mobileView === "nav" ? "hidden" : ""}`}>
+        <main className="flex-1 min-w-0 neon-main flex flex-col min-h-0 relative">
+          {isMobile && renderMobileTopBar()}
           {showSettingsPanel && (
-            <div className="flex-1 min-h-0 bg-[#313338] px-6 py-4 overflow-y-auto space-y-3">
+            <div className="flex-1 min-h-0 bg-transparent px-6 py-4 overflow-y-auto space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="font-medium">Configurações do servidor e perfil</h3>
                 <button
@@ -6777,7 +7210,7 @@ export function AppShell() {
                     setShowSettingsPanel(false);
                     setSettingsPanelMode("all");
                   }}
-                  className="rounded bg-[#383A40] hover:bg-[#404249] px-2 py-1 text-xs"
+                  className="rounded bg-[var(--tk-bg-elev)] hover:bg-[var(--tk-bg-active)] px-2 py-1 text-xs"
                 >
                   Fechar
                 </button>
@@ -6786,9 +7219,9 @@ export function AppShell() {
               {settingsPanelMode === "server" && (
                 <>
                   {hasSelectedServerDetails && (
-                    <form onSubmit={saveServerNotificationSettings} className="space-y-2 rounded border border-[#1F2023] bg-[#2B2D31]/60 p-3">
+                    <form onSubmit={saveServerNotificationSettings} className="space-y-2 rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)]/60 p-3">
                       <p className="text-sm font-medium">Notificacoes do servidor</p>
-                      <label className="flex items-center gap-2 text-xs text-[#B5BAC1]">
+                      <label className="flex items-center gap-2 text-xs text-[var(--tk-text-muted)]">
                         <input
                           type="checkbox"
                           checked={serverSettingsNotifySoundEnabled}
@@ -6799,35 +7232,35 @@ export function AppShell() {
                       <button
                         type="submit"
                         disabled={busy}
-                        className="w-full rounded bg-[#404249] hover:bg-[#404249] px-2 py-1 text-sm disabled:opacity-60"
+                        className="w-full rounded bg-[var(--tk-bg-active)] hover:bg-[var(--tk-bg-active)] px-2 py-1 text-sm disabled:opacity-60"
                       >
                         Salvar notificacoes
                       </button>
                     </form>
                   )}
                   {hasSelectedServerDetails && canManageChannels && (
-                    <form onSubmit={saveServerSettings} className="space-y-2 rounded border border-[#1F2023] bg-[#2B2D31]/60 p-3">
+                    <form onSubmit={saveServerSettings} className="space-y-2 rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)]/60 p-3">
                       <p className="text-sm font-medium">Configurações do servidor</p>
                       {isSelectedServerOwner && (
                         <>
-                          <label className="text-xs text-[#949BA4]">Nome do servidor</label>
+                          <label className="text-xs text-[var(--tk-text-subtle)]">Nome do servidor</label>
                           <input
-                            className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-sm"
+                            className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-sm"
                             value={serverSettingsName}
                             onChange={(event) => setServerSettingsName(event.target.value)}
                             placeholder="Nome do servidor"
                           />
-                          <label className="text-xs text-[#949BA4]">Foto do servidor</label>
+                          <label className="text-xs text-[var(--tk-text-subtle)]">Foto do servidor</label>
                           <input
                             key={serverSettingsAvatarInputKey}
                             type="file"
                             accept="image/*"
                             onChange={(event) => setServerSettingsAvatarFile(event.target.files?.[0] ?? null)}
-                            className="block w-full text-xs text-[#B5BAC1] file:mr-2 file:rounded file:border-0 file:bg-[#4E5058] file:px-2 file:py-1 file:text-[#DBDEE1]"
+                            className="block w-full text-xs text-[var(--tk-text-muted)] file:mr-2 file:rounded file:border-0 file:bg-[var(--tk-border-strong)] file:px-2 file:py-1 file:text-[var(--tk-text)]"
                           />
                         </>
                       )}
-                      <div className="space-y-1 rounded border border-[#1F2023] bg-[#2B2D31] px-2 py-2 text-xs">
+                      <div className="space-y-1 rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)] px-2 py-2 text-xs">
                         {isSelectedServerOwner && (
                           <>
                             <label className="flex items-center gap-2">
@@ -6838,16 +7271,16 @@ export function AppShell() {
                               />
                               Ativar scan de arquivos com VirusTotal antes do download
                             </label>
-                            <label className="text-[#949BA4]">Chave da API VirusTotal (do dono)</label>
+                            <label className="text-[var(--tk-text-subtle)]">Chave da API VirusTotal (do dono)</label>
                             <input
                               type="password"
-                              className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-xs"
+                              className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-xs"
                               value={serverSettingsVirusTotalApiKey}
                               onChange={(event) => setServerSettingsVirusTotalApiKey(event.target.value)}
                               placeholder={serverDetails?.server.virusTotalConfigured ? "Chave já configurada (preencha para trocar)" : "Cole sua chave VirusTotal"}
                             />
                             {serverDetails?.server.virusTotalConfigured && (
-                              <p className="text-[11px] text-[#80848E]">Chave já cadastrada. Deixe em branco para manter a atual.</p>
+                              <p className="text-[11px] text-[var(--tk-text-faint)]">Chave já cadastrada. Deixe em branco para manter a atual.</p>
                             )}
                           </>
                         )}
@@ -6945,7 +7378,7 @@ export function AppShell() {
                         <button
                           type="submit"
                           disabled={busy || (isSelectedServerOwner && !serverSettingsName.trim())}
-                          className="rounded bg-[#404249] hover:bg-[#404249] px-2 py-1 text-sm disabled:opacity-60"
+                          className="rounded bg-[var(--tk-bg-active)] hover:bg-[var(--tk-bg-active)] px-2 py-1 text-sm disabled:opacity-60"
                         >
                           Salvar servidor
                         </button>
@@ -6954,7 +7387,7 @@ export function AppShell() {
                             type="button"
                             onClick={() => void removeServerAvatar()}
                             disabled={busy || !serverDetails?.server.avatarUrl}
-                            className="rounded bg-[#383A40] hover:bg-[#404249] px-2 py-1 text-sm disabled:opacity-60"
+                            className="rounded bg-[var(--tk-bg-elev)] hover:bg-[var(--tk-bg-active)] px-2 py-1 text-sm disabled:opacity-60"
                           >
                             Remover foto
                           </button>
@@ -6966,9 +7399,9 @@ export function AppShell() {
                   )}
 
                   {hasSelectedServerDetails && canManageServerBanner && (
-                    <form onSubmit={uploadServerBanner} className="space-y-2 rounded border border-[#1F2023] bg-[#2B2D31]/60 p-3">
+                    <form onSubmit={uploadServerBanner} className="space-y-2 rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)]/60 p-3">
                       <p className="text-sm font-medium">Banner do servidor</p>
-                      <p className="text-[11px] text-[#80848E]">
+                      <p className="text-[11px] text-[var(--tk-text-faint)]">
                         Tamanho exibido: altura fixa (ajuste automático por corte). Suporta imagem e GIF.
                       </p>
                       <input
@@ -6976,13 +7409,13 @@ export function AppShell() {
                         type="file"
                         accept="image/*"
                         onChange={(event) => setServerSettingsBannerFile(event.target.files?.[0] ?? null)}
-                        className="block w-full text-xs text-[#B5BAC1] file:mr-2 file:rounded file:border-0 file:bg-[#4E5058] file:px-2 file:py-1 file:text-[#DBDEE1]"
+                        className="block w-full text-xs text-[var(--tk-text-muted)] file:mr-2 file:rounded file:border-0 file:bg-[var(--tk-border-strong)] file:px-2 file:py-1 file:text-[var(--tk-text)]"
                       />
                       <div className="grid grid-cols-2 gap-2">
                         <button
                           type="submit"
                           disabled={busy || !serverSettingsBannerFile}
-                          className="rounded bg-[#404249] hover:bg-[#404249] px-2 py-1 text-sm disabled:opacity-60"
+                          className="rounded bg-[var(--tk-bg-active)] hover:bg-[var(--tk-bg-active)] px-2 py-1 text-sm disabled:opacity-60"
                         >
                           Atualizar banner
                         </button>
@@ -6990,7 +7423,7 @@ export function AppShell() {
                           type="button"
                           onClick={() => void removeServerBanner()}
                           disabled={busy || !serverDetails?.server.serverBannerUrl}
-                          className="rounded bg-[#383A40] hover:bg-[#404249] px-2 py-1 text-sm disabled:opacity-60"
+                          className="rounded bg-[var(--tk-bg-elev)] hover:bg-[var(--tk-bg-active)] px-2 py-1 text-sm disabled:opacity-60"
                         >
                           Remover banner
                         </button>
@@ -7000,12 +7433,12 @@ export function AppShell() {
 
                   {hasSelectedServerDetails && (
                     <div className="grid gap-3 lg:grid-cols-2">
-                      <div className="rounded border border-[#1F2023] bg-[#2B2D31]/60 p-3 space-y-2">
+                      <div className="rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)]/60 p-3 space-y-2">
                         <p className="text-sm font-medium">Figurinhas do servidor</p>
                         {canCreateServerStickers ? (
                           <form onSubmit={createSticker} className="space-y-2">
                             <input
-                              className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-sm"
+                              className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-sm"
                               value={newStickerName}
                               onChange={(event) => setNewStickerName(event.target.value)}
                               placeholder="Nome da figurinha (ex: festa)"
@@ -7016,27 +7449,27 @@ export function AppShell() {
                               type="file"
                               accept="image/png,image/jpeg,image/webp,image/gif"
                               onChange={(event) => setNewStickerFile(event.target.files?.[0] ?? null)}
-                              className="block w-full text-xs text-[#B5BAC1] file:mr-2 file:rounded file:border-0 file:bg-[#4E5058] file:px-2 file:py-1 file:text-[#DBDEE1]"
+                              className="block w-full text-xs text-[var(--tk-text-muted)] file:mr-2 file:rounded file:border-0 file:bg-[var(--tk-border-strong)] file:px-2 file:py-1 file:text-[var(--tk-text)]"
                             />
                             <button
                               type="submit"
                               disabled={busy || !newStickerFile}
-                              className="rounded bg-[#404249] hover:bg-[#404249] px-2 py-1 text-xs disabled:opacity-60"
+                              className="rounded bg-[var(--tk-bg-active)] hover:bg-[var(--tk-bg-active)] px-2 py-1 text-xs disabled:opacity-60"
                             >
                               Enviar figurinha
                             </button>
                           </form>
                         ) : (
-                          <p className="text-xs text-[#80848E]">Seu cargo não pode criar figurinhas neste servidor.</p>
+                          <p className="text-xs text-[var(--tk-text-faint)]">Seu cargo não pode criar figurinhas neste servidor.</p>
                         )}
                         <div className="space-y-1 max-h-48 overflow-y-auto pr-1">
                           {(serverDetails?.server.stickers ?? []).map((sticker) => (
-                            <div key={sticker.id} className="flex items-center justify-between gap-2 rounded border border-[#1F2023] bg-[#1E1F22] px-2 py-1">
+                            <div key={sticker.id} className="flex items-center justify-between gap-2 rounded border border-[var(--tk-line)] bg-[var(--tk-bg-deep)] px-2 py-1">
                               <div className="flex items-center gap-2 min-w-0">
-                                <img src={sticker.url} alt={sticker.name} className="h-8 w-8 rounded border border-[#1F2023] object-cover" />
+                                <img src={sticker.url} alt={sticker.name} className="h-8 w-8 rounded border border-[var(--tk-line)] object-cover" />
                                 <div className="min-w-0">
                                   <div className="text-xs font-medium truncate">{sticker.name}</div>
-                                  <div className="text-[11px] text-[#80848E] truncate">por {sticker.createdByName}</div>
+                                  <div className="text-[11px] text-[var(--tk-text-faint)] truncate">por {sticker.createdByName}</div>
                                 </div>
                               </div>
                               {(sticker.createdById === userId || canModerateUserMessages) && (
@@ -7052,17 +7485,17 @@ export function AppShell() {
                             </div>
                           ))}
                           {(serverDetails?.server.stickers ?? []).length === 0 && (
-                            <p className="text-xs text-[#80848E]">Nenhuma figurinha cadastrada.</p>
+                            <p className="text-xs text-[var(--tk-text-faint)]">Nenhuma figurinha cadastrada.</p>
                           )}
                         </div>
                       </div>
 
-                      <div className="rounded border border-[#1F2023] bg-[#2B2D31]/60 p-3 space-y-2">
+                      <div className="rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)]/60 p-3 space-y-2">
                         <p className="text-sm font-medium">Emojis do servidor</p>
                         {canCreateServerEmojis ? (
                           <form onSubmit={createEmoji} className="space-y-2">
                             <input
-                              className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-sm"
+                              className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-sm"
                               value={newEmojiName}
                               onChange={(event) => setNewEmojiName(event.target.value)}
                               placeholder="Nome do emoji (ex: hype)"
@@ -7073,27 +7506,27 @@ export function AppShell() {
                               type="file"
                               accept="image/png,image/jpeg,image/webp,image/gif"
                               onChange={(event) => setNewEmojiFile(event.target.files?.[0] ?? null)}
-                              className="block w-full text-xs text-[#B5BAC1] file:mr-2 file:rounded file:border-0 file:bg-[#4E5058] file:px-2 file:py-1 file:text-[#DBDEE1]"
+                              className="block w-full text-xs text-[var(--tk-text-muted)] file:mr-2 file:rounded file:border-0 file:bg-[var(--tk-border-strong)] file:px-2 file:py-1 file:text-[var(--tk-text)]"
                             />
                             <button
                               type="submit"
                               disabled={busy || !newEmojiFile}
-                              className="rounded bg-[#404249] hover:bg-[#404249] px-2 py-1 text-xs disabled:opacity-60"
+                              className="rounded bg-[var(--tk-bg-active)] hover:bg-[var(--tk-bg-active)] px-2 py-1 text-xs disabled:opacity-60"
                             >
                               Enviar emoji
                             </button>
                           </form>
                         ) : (
-                          <p className="text-xs text-[#80848E]">Seu cargo não pode criar emojis neste servidor.</p>
+                          <p className="text-xs text-[var(--tk-text-faint)]">Seu cargo não pode criar emojis neste servidor.</p>
                         )}
                         <div className="space-y-1 max-h-48 overflow-y-auto pr-1">
                           {(serverDetails?.server.emojis ?? []).map((emoji) => (
-                            <div key={emoji.id} className="flex items-center justify-between gap-2 rounded border border-[#1F2023] bg-[#1E1F22] px-2 py-1">
+                            <div key={emoji.id} className="flex items-center justify-between gap-2 rounded border border-[var(--tk-line)] bg-[var(--tk-bg-deep)] px-2 py-1">
                               <div className="flex items-center gap-2 min-w-0">
-                                <img src={emoji.url} alt={emoji.name} className="h-7 w-7 rounded-sm border border-[#1F2023] object-cover" />
+                                <img src={emoji.url} alt={emoji.name} className="h-7 w-7 rounded-sm border border-[var(--tk-line)] object-cover" />
                                 <div className="min-w-0">
                                   <div className="text-xs font-medium truncate">{emoji.name}</div>
-                                  <div className="text-[11px] text-[#80848E] truncate">por {emoji.createdByName}</div>
+                                  <div className="text-[11px] text-[var(--tk-text-faint)] truncate">por {emoji.createdByName}</div>
                                 </div>
                               </div>
                               {(emoji.createdById === userId || canModerateUserMessages) && (
@@ -7109,7 +7542,7 @@ export function AppShell() {
                             </div>
                           ))}
                           {(serverDetails?.server.emojis ?? []).length === 0 && (
-                            <p className="text-xs text-[#80848E]">Nenhum emoji cadastrado.</p>
+                            <p className="text-xs text-[var(--tk-text-faint)]">Nenhum emoji cadastrado.</p>
                           )}
                         </div>
                       </div>
@@ -7117,14 +7550,14 @@ export function AppShell() {
                   )}
 
                   {hasSelectedServerDetails ? (
-                  <div className="rounded border border-[#1F2023] bg-[#2B2D31]/60 p-3 space-y-2">
+                  <div className="rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)]/60 p-3 space-y-2">
                     <p className="text-sm font-medium">Membros no servidor</p>
                     <input
                       type="text"
                       value={settingsMemberSearchTerm}
                       onChange={(event) => setSettingsMemberSearchTerm(event.target.value)}
                       placeholder="Buscar por nome ou userId"
-                      className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-xs"
+                      className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-xs"
                     />
                     <ul
                       className="no-scrollbar max-h-64 overflow-y-auto space-y-1 pr-1 text-sm"
@@ -7155,17 +7588,17 @@ export function AppShell() {
                               y: event.clientY,
                             });
                           }}
-                          className="rounded-[4px] px-2 py-1.5 text-[#949BA4] hover:bg-[#35373C] hover:text-[#DBDEE1] cursor-pointer"
+                          className="rounded-[4px] px-2 py-1.5 text-[var(--tk-text-subtle)] hover:bg-[var(--tk-bg-hover)] hover:text-[var(--tk-text)] cursor-pointer"
                         >
                           <div className="flex items-center gap-2 min-w-0">
                             {member.avatarUrl ? (
                               <img
                                 src={member.avatarUrl}
                                 alt={member.userName || "Usuário"}
-                                className="h-5 w-5 rounded-full object-cover border border-[#3F4147]"
+                                className="h-5 w-5 rounded-full object-cover border border-[var(--tk-border)]"
                               />
                             ) : (
-                              <div className="h-5 w-5 rounded-full border border-[#3F4147] bg-[#2B2D31] flex items-center justify-center text-[9px] text-[#B5BAC1]">
+                              <div className="h-5 w-5 rounded-full border border-[var(--tk-border)] bg-[var(--tk-bg-panel)] flex items-center justify-center text-[9px] text-[var(--tk-text-muted)]">
                                 {(member.userName || "U").slice(0, 1).toUpperCase()}
                               </div>
                             )}
@@ -7177,13 +7610,13 @@ export function AppShell() {
                         </li>
                       ))}
                       {hasMoreVisibleSettingsMembers && (
-                        <li className="text-center text-xs text-[#80848E]">Role para carregar mais membros...</li>
+                        <li className="text-center text-xs text-[var(--tk-text-faint)]">Role para carregar mais membros...</li>
                       )}
                     </ul>
                   </div>
                   ) : (
-                    <div className="rounded border border-[#1F2023] bg-[#2B2D31]/60 p-3">
-                      <p className="text-sm text-[#949BA4]">Você não tem acesso às configurações deste servidor.</p>
+                    <div className="rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)]/60 p-3">
+                      <p className="text-sm text-[var(--tk-text-subtle)]">Você não tem acesso às configurações deste servidor.</p>
                     </div>
                   )}
 
@@ -7205,7 +7638,7 @@ export function AppShell() {
                   )}
 
                   {canManageBansForSelectedServer && (
-                    <div className="rounded border border-[#1F2023] bg-[#2B2D31]/60 p-3 space-y-2">
+                    <div className="rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)]/60 p-3 space-y-2">
                       <p className="text-sm font-medium">Usuários banidos</p>
                       <ul className="space-y-1 text-sm">
                         {serverBans.map((ban) => (
@@ -7221,37 +7654,37 @@ export function AppShell() {
                                 y: event.clientY,
                               });
                             }}
-                            className="rounded-[4px] px-2 py-1.5 text-[#949BA4] hover:bg-[#35373C] hover:text-[#DBDEE1] cursor-pointer"
+                            className="rounded-[4px] px-2 py-1.5 text-[var(--tk-text-subtle)] hover:bg-[var(--tk-bg-hover)] hover:text-[var(--tk-text)] cursor-pointer"
                           >
                             {ban.userName} ({ban.userId})
                           </li>
                         ))}
                         {serverBans.length === 0 && (
-                          <li className="text-xs text-[#80848E]">Nenhum usuário banido.</li>
+                          <li className="text-xs text-[var(--tk-text-faint)]">Nenhum usuário banido.</li>
                         )}
                       </ul>
-                      <p className="text-[11px] text-[#80848E]">Clique com botão direito em um banido para remover o ban.</p>
+                      <p className="text-[11px] text-[var(--tk-text-faint)]">Clique com botão direito em um banido para remover o ban.</p>
                     </div>
                   )}
 
                   {canManageInvites && (
-                  <div className="rounded border border-[#1F2023] bg-[#2B2D31]/60 p-3 space-y-2">
+                  <div className="rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)]/60 p-3 space-y-2">
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-sm font-medium">Links de convite</p>
                       <button
                         type="button"
                         onClick={() => void createInviteLink()}
                         disabled={busy || serverInvites.length >= 10}
-                        className="rounded bg-[#404249] hover:bg-[#404249] px-2 py-1 text-xs disabled:opacity-60"
+                        className="rounded bg-[var(--tk-bg-active)] hover:bg-[var(--tk-bg-active)] px-2 py-1 text-xs disabled:opacity-60"
                       >
                         Gerar link
                       </button>
                     </div>
-                    <p className="text-xs text-[#949BA4]">
+                    <p className="text-xs text-[var(--tk-text-subtle)]">
                       {serverInvites.length}/10 links ativos. Somente usuários com cadastro válido entram com convite.
                     </p>
                     {serverInvites.length === 0 && (
-                      <p className="text-xs text-[#80848E]">Nenhum link criado.</p>
+                      <p className="text-xs text-[var(--tk-text-faint)]">Nenhum link criado.</p>
                     )}
                     <div className="space-y-2">
                       {serverInvites.map((invite) => {
@@ -7260,9 +7693,9 @@ export function AppShell() {
                           : `/?invite=${encodeURIComponent(invite.code)}`;
 
                         return (
-                          <div key={invite.id} className="rounded border border-[#1F2023] bg-[#2B2D31] px-2 py-2 text-xs space-y-1">
-                            <div className="break-all text-[#B5BAC1]">{inviteUrl}</div>
-                            <div className="flex items-center justify-between text-[#80848E]">
+                          <div key={invite.id} className="rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)] px-2 py-2 text-xs space-y-1">
+                            <div className="break-all text-[var(--tk-text-muted)]">{inviteUrl}</div>
+                            <div className="flex items-center justify-between text-[var(--tk-text-faint)]">
                               <span>{new Date(invite.createdAt).toLocaleString()}</span>
                               <button
                                 type="button"
@@ -7281,9 +7714,9 @@ export function AppShell() {
                   )}
 
                   {canManageChannels && (
-                    <div className="rounded border border-[#1F2023] bg-[#2B2D31]/60 p-3 space-y-2">
+                    <div className="rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)]/60 p-3 space-y-2">
                       <p className="text-sm font-medium">Logs de auditoria</p>
-                      <p className="text-xs text-[#949BA4]">Histórico de ações de administração e moderação no servidor</p>
+                      <p className="text-xs text-[var(--tk-text-subtle)]">Histórico de ações de administração e moderação no servidor</p>
                       {auditLogsError && (
                         <p className="text-xs text-[#FA777C]">{auditLogsError}</p>
                       )}
@@ -7298,7 +7731,7 @@ export function AppShell() {
                               setAuditLogSearchQuery(event.target.value);
                               setAuditLogCurrentPage(1);
                             }}
-                            className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-xs"
+                            className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-xs"
                           />
                           <div className="grid grid-cols-3 gap-2">
                             <input
@@ -7308,7 +7741,7 @@ export function AppShell() {
                                 setAuditLogFilterDate(event.target.value);
                                 setAuditLogCurrentPage(1);
                               }}
-                              className="rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-xs"
+                              className="rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-xs"
                             />
                             <input
                               type="time"
@@ -7318,7 +7751,7 @@ export function AppShell() {
                                 setAuditLogFilterTimeStart(event.target.value);
                                 setAuditLogCurrentPage(1);
                               }}
-                              className="rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-xs"
+                              className="rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-xs"
                             />
                             <input
                               type="time"
@@ -7328,7 +7761,7 @@ export function AppShell() {
                                 setAuditLogFilterTimeEnd(event.target.value);
                                 setAuditLogCurrentPage(1);
                               }}
-                              className="rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-xs"
+                              className="rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-xs"
                             />
                           </div>
                         </div>
@@ -7407,13 +7840,13 @@ export function AppShell() {
                                       }[log.action] || "realizou ação";
 
                                       return (
-                                        <div key={log.id} className="text-xs rounded bg-[#383A40] px-2 py-1.5 text-[#B5BAC1]">
+                                        <div key={log.id} className="text-xs rounded bg-[var(--tk-bg-elev)] px-2 py-1.5 text-[var(--tk-text-muted)]">
                                           <div className="flex items-center justify-between gap-2">
                                             <span className="flex-1 min-w-0">
-                                              <strong className="text-[#DBDEE1]">{log.actorName}</strong> {actionText}
-                                              {log.targetName && <strong className="text-[#DBDEE1]"> {log.targetName}</strong>}
+                                              <strong className="text-[var(--tk-text)]">{log.actorName}</strong> {actionText}
+                                              {log.targetName && <strong className="text-[var(--tk-text)]"> {log.targetName}</strong>}
                                             </span>
-                                            <span className="text-[#80848E] whitespace-nowrap text-[10px]">
+                                            <span className="text-[var(--tk-text-faint)] whitespace-nowrap text-[10px]">
                                               {new Date(log.createdAt).toLocaleString('pt-BR', { 
                                                 day: '2-digit', 
                                                 month: '2-digit', 
@@ -7423,7 +7856,7 @@ export function AppShell() {
                                             </span>
                                           </div>
                                           {log.details && (
-                                            <div className="mt-1 text-[#949BA4]">{log.details}</div>
+                                            <div className="mt-1 text-[var(--tk-text-subtle)]">{log.details}</div>
                                           )}
                                         </div>
                                       );
@@ -7432,7 +7865,7 @@ export function AppShell() {
                                   
                                   {totalPages > 1 && (
                                     <div className="flex items-center justify-between text-xs pt-1">
-                                      <span className="text-[#949BA4]">
+                                      <span className="text-[var(--tk-text-subtle)]">
                                         Página {currentPage} de {totalPages} ({filteredLogs.length} {filteredLogs.length === 1 ? 'registro' : 'registros'})
                                       </span>
                                       <div className="flex gap-1">
@@ -7440,7 +7873,7 @@ export function AppShell() {
                                           type="button"
                                           onClick={() => setAuditLogCurrentPage(Math.max(1, currentPage - 1))}
                                           disabled={currentPage === 1}
-                                          className="rounded bg-[#404249] hover:bg-[#404249] px-2 py-1 disabled:opacity-40 disabled:cursor-not-allowed"
+                                          className="rounded bg-[var(--tk-bg-active)] hover:bg-[var(--tk-bg-active)] px-2 py-1 disabled:opacity-40 disabled:cursor-not-allowed"
                                         >
                                           ← Anterior
                                         </button>
@@ -7448,7 +7881,7 @@ export function AppShell() {
                                           type="button"
                                           onClick={() => setAuditLogCurrentPage(Math.min(totalPages, currentPage + 1))}
                                           disabled={currentPage === totalPages}
-                                          className="rounded bg-[#404249] hover:bg-[#404249] px-2 py-1 disabled:opacity-40 disabled:cursor-not-allowed"
+                                          className="rounded bg-[var(--tk-bg-active)] hover:bg-[var(--tk-bg-active)] px-2 py-1 disabled:opacity-40 disabled:cursor-not-allowed"
                                         >
                                           Próxima →
                                         </button>
@@ -7457,13 +7890,13 @@ export function AppShell() {
                                   )}
                                 </>
                               ) : (
-                                <p className="text-xs text-[#80848E]">Nenhum resultado encontrado para &quot;{auditLogSearchQuery}&quot;.</p>
+                                <p className="text-xs text-[var(--tk-text-faint)]">Nenhum resultado encontrado para &quot;{auditLogSearchQuery}&quot;.</p>
                               )}
                             </>
                           );
                         })()
                       ) : (
-                        <p className="text-xs text-[#80848E]">Nenhuma ação registrada ainda.</p>
+                        <p className="text-xs text-[var(--tk-text-faint)]">Nenhuma ação registrada ainda.</p>
                       )}
                     </div>
                   )}
@@ -7490,18 +7923,18 @@ export function AppShell() {
 
               {settingsPanelMode === "all" && (
                 <>
-                  <form onSubmit={saveOwnProfile} className="space-y-3 rounded border border-[#1F2023] bg-[#2B2D31]/60 p-3">
+                  <form onSubmit={saveOwnProfile} className="space-y-3 rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)]/60 p-3">
                     <p className="text-sm font-medium">Perfil</p>
                     <div>
-                      <label className="text-xs text-[#949BA4]">Nome de exibição</label>
+                      <label className="text-xs text-[var(--tk-text-subtle)]">Nome de exibição</label>
                       <input
-                        className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-sm"
+                        className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-sm"
                         value={userName}
                         onChange={(event) => setUserName(event.target.value)}
                         placeholder="Seu nome"
                       />
-                      <p className="text-[11px] text-[#80848E] mt-1">Pré-visualização (passa o mouse):</p>
-                      <div className="display-name-wrapper mt-1 rounded bg-[#383A40] px-2 py-1 text-sm inline-block">
+                      <p className="text-[11px] text-[var(--tk-text-faint)] mt-1">Pré-visualização (passa o mouse):</p>
+                      <div className="display-name-wrapper mt-1 rounded bg-[var(--tk-bg-elev)] px-2 py-1 text-sm inline-block">
                         <StyledDisplayName
                           displayName={userName || "Seu nome"}
                           style={{
@@ -7518,11 +7951,11 @@ export function AppShell() {
                       </div>
                     </div>
 
-                    <div className="border-t border-[#3F4147] pt-3">
-                      <p className="text-xs text-[#949BA4] mb-2">Personalização do nome</p>
+                    <div className="border-t border-[var(--tk-border)] pt-3">
+                      <p className="text-xs text-[var(--tk-text-subtle)] mb-2">Personalização do nome</p>
                       
                       <div className="space-y-2">
-                        <label className="flex items-center gap-2 text-xs text-[#B5BAC1]">
+                        <label className="flex items-center gap-2 text-xs text-[var(--tk-text-muted)]">
                           <input
                             type="checkbox"
                             checked={displayNameGradientEnabled}
@@ -7533,19 +7966,19 @@ export function AppShell() {
 
                         {!displayNameGradientEnabled && (
                           <div>
-                            <label className="text-xs text-[#949BA4]">Cor</label>
+                            <label className="text-xs text-[var(--tk-text-subtle)]">Cor</label>
                             <div className="flex gap-2">
                               <input
                                 type="color"
                                 value={displayNameColor}
                                 onChange={(event) => setDisplayNameColor(event.target.value)}
-                                className="w-10 h-8 rounded border border-[#3F4147] cursor-pointer"
+                                className="w-10 h-8 rounded border border-[var(--tk-border)] cursor-pointer"
                               />
                               <input
                                 type="text"
                                 value={displayNameColor}
                                 onChange={(event) => setDisplayNameColor(event.target.value)}
-                                className="flex-1 rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-xs"
+                                className="flex-1 rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-xs"
                                 placeholder="#ffffff"
                               />
                             </div>
@@ -7553,11 +7986,11 @@ export function AppShell() {
                         )}
 
                         <div>
-                          <label className="text-xs text-[#949BA4]">Fonte</label>
+                          <label className="text-xs text-[var(--tk-text-subtle)]">Fonte</label>
                           <select
                             value={displayNameFontFamily}
                             onChange={(event) => setDisplayNameFontFamily(event.target.value)}
-                            className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-xs"
+                            className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-xs"
                           >
                             <option value="sans">Padrão (Sans)</option>
                             <option value="serif">Serifa</option>
@@ -7566,7 +7999,7 @@ export function AppShell() {
                           </select>
                         </div>
 
-                        <label className="flex items-center gap-2 text-xs text-[#B5BAC1]">
+                        <label className="flex items-center gap-2 text-xs text-[var(--tk-text-muted)]">
                           <input
                             type="checkbox"
                             checked={displayNameBold}
@@ -7576,11 +8009,11 @@ export function AppShell() {
                         </label>
 
                         <div>
-                          <label className="text-xs text-[#949BA4]">Animação (ativa ao passar o mouse)</label>
+                          <label className="text-xs text-[var(--tk-text-subtle)]">Animação (ativa ao passar o mouse)</label>
                           <select
                             value={displayNameAnimation}
                             onChange={(event) => setDisplayNameAnimation(event.target.value)}
-                            className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-xs"
+                            className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-xs"
                           >
                             <option value="none">Nenhuma</option>
                             <option value="pulse">Pulso</option>
@@ -7589,7 +8022,7 @@ export function AppShell() {
                           </select>
                         </div>
 
-                        <label className="flex items-center gap-2 text-xs text-[#B5BAC1]">
+                        <label className="flex items-center gap-2 text-xs text-[var(--tk-text-muted)]">
                           <input
                             type="checkbox"
                             checked={displayNameShowBackground}
@@ -7599,27 +8032,27 @@ export function AppShell() {
                         </label>
 
                         {displayNameShowBackground && (
-                          <div className="space-y-2 pl-5 border-l border-[#3F4147]">
+                          <div className="space-y-2 pl-5 border-l border-[var(--tk-border)]">
                             <div>
-                              <label className="text-xs text-[#949BA4]">Cor do fundo</label>
+                              <label className="text-xs text-[var(--tk-text-subtle)]">Cor do fundo</label>
                               <div className="flex gap-2">
                                 <input
                                   type="color"
                                   value={displayNameBackgroundColor}
                                   onChange={(event) => setDisplayNameBackgroundColor(event.target.value)}
-                                  className="w-10 h-8 rounded border border-[#3F4147] cursor-pointer"
+                                  className="w-10 h-8 rounded border border-[var(--tk-border)] cursor-pointer"
                                 />
                                 <input
                                   type="text"
                                   value={displayNameBackgroundColor}
                                   onChange={(event) => setDisplayNameBackgroundColor(event.target.value)}
-                                  className="flex-1 rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-xs"
+                                  className="flex-1 rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-xs"
                                   placeholder="#1a1a2e"
                                 />
                               </div>
                             </div>
                             <div>
-                              <label className="text-xs text-[#949BA4]">Opacidade: {displayNameBackgroundOpacity}%</label>
+                              <label className="text-xs text-[var(--tk-text-subtle)]">Opacidade: {displayNameBackgroundOpacity}%</label>
                               <input
                                 type="range"
                                 min="0"
@@ -7637,50 +8070,50 @@ export function AppShell() {
                     <button
                       type="submit"
                       disabled={busy || !userName.trim()}
-                      className="w-full rounded bg-[#404249] hover:bg-[#404249] px-2 py-1 text-sm disabled:opacity-60"
+                      className="w-full rounded bg-[var(--tk-bg-active)] hover:bg-[var(--tk-bg-active)] px-2 py-1 text-sm disabled:opacity-60"
                     >
                       Salvar personalização
                     </button>
                   </form>
 
-                  <form onSubmit={uploadAvatar} className="space-y-2 rounded border border-[#1F2023] bg-[#2B2D31]/60 p-3">
+                  <form onSubmit={uploadAvatar} className="space-y-2 rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)]/60 p-3">
                     <p className="text-sm font-medium">Foto de perfil</p>
-                    <label className="text-xs text-[#949BA4]">Imagem ou GIF</label>
+                    <label className="text-xs text-[var(--tk-text-subtle)]">Imagem ou GIF</label>
                     <input
                       key={avatarInputKey}
                       type="file"
                       accept="image/*"
                       onChange={(event) => setAvatarFile(event.target.files?.[0] ?? null)}
-                      className="block w-full text-xs text-[#B5BAC1] file:mr-2 file:rounded file:border-0 file:bg-[#4E5058] file:px-2 file:py-1 file:text-[#DBDEE1]"
+                      className="block w-full text-xs text-[var(--tk-text-muted)] file:mr-2 file:rounded file:border-0 file:bg-[var(--tk-border-strong)] file:px-2 file:py-1 file:text-[var(--tk-text)]"
                     />
                     <button
                       type="submit"
                       disabled={busy || !avatarFile}
-                      className="w-full rounded bg-[#404249] hover:bg-[#404249] px-2 py-1 text-sm disabled:opacity-60"
+                      className="w-full rounded bg-[var(--tk-bg-active)] hover:bg-[var(--tk-bg-active)] px-2 py-1 text-sm disabled:opacity-60"
                     >
                       Atualizar foto
                     </button>
                   </form>
 
-                  <form onSubmit={uploadProfileCardGif} className="space-y-2 rounded border border-[#1F2023] bg-[#2B2D31]/60 p-3">
+                  <form onSubmit={uploadProfileCardGif} className="space-y-2 rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)]/60 p-3">
                     <p className="text-sm font-medium">GIF do card na DM</p>
-                    <p className="text-[11px] text-[#80848E]">
+                    <p className="text-[11px] text-[var(--tk-text-faint)]">
                       O GIF fica atrás do card no painel lateral da DM e só toca ao passar o mouse.
                       Tamanho padrão: 320x96 (arquivos fora do padrão serão ajustados automaticamente).
                     </p>
-                    <label className="text-xs text-[#949BA4]">Arquivo GIF (.gif)</label>
+                    <label className="text-xs text-[var(--tk-text-subtle)]">Arquivo GIF (.gif)</label>
                     <input
                       key={profileCardGifInputKey}
                       type="file"
                       accept="image/gif"
                       onChange={(event) => setProfileCardGifFile(event.target.files?.[0] ?? null)}
-                      className="block w-full text-xs text-[#B5BAC1] file:mr-2 file:rounded file:border-0 file:bg-[#4E5058] file:px-2 file:py-1 file:text-[#DBDEE1]"
+                      className="block w-full text-xs text-[var(--tk-text-muted)] file:mr-2 file:rounded file:border-0 file:bg-[var(--tk-border-strong)] file:px-2 file:py-1 file:text-[var(--tk-text)]"
                     />
                     <div className="flex items-center gap-2">
                       <button
                         type="submit"
                         disabled={busy || !profileCardGifFile}
-                        className="flex-1 rounded bg-[#404249] hover:bg-[#404249] px-2 py-1 text-sm disabled:opacity-60"
+                        className="flex-1 rounded bg-[var(--tk-bg-active)] hover:bg-[var(--tk-bg-active)] px-2 py-1 text-sm disabled:opacity-60"
                       >
                         Atualizar GIF do card
                       </button>
@@ -7688,44 +8121,44 @@ export function AppShell() {
                         type="button"
                         onClick={() => void removeProfileCardGif()}
                         disabled={busy || !displayNameProfileCardGifUrl}
-                        className="rounded border border-[#3F4147] bg-[#383A40] hover:bg-[#404249] px-2 py-1 text-sm disabled:opacity-60"
+                        className="rounded border border-[var(--tk-border)] bg-[var(--tk-bg-elev)] hover:bg-[var(--tk-bg-active)] px-2 py-1 text-sm disabled:opacity-60"
                       >
                         Remover
                       </button>
                     </div>
                   </form>
 
-                  <form onSubmit={updateOwnPassword} className="space-y-2 rounded border border-[#1F2023] bg-[#2B2D31]/60 p-3">
+                  <form onSubmit={updateOwnPassword} className="space-y-2 rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)]/60 p-3">
                     <p className="text-sm font-medium">Segurança</p>
-                    <label className="text-xs text-[#949BA4]">Nova senha</label>
+                    <label className="text-xs text-[var(--tk-text-subtle)]">Nova senha</label>
                     <input
                       type="password"
                       value={newOwnPassword}
                       onChange={(event) => setNewOwnPassword(event.target.value)}
-                      className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-sm"
+                      className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-sm"
                       placeholder="Digite a nova senha"
                     />
-                    <label className="text-xs text-[#949BA4]">Confirmar nova senha</label>
+                    <label className="text-xs text-[var(--tk-text-subtle)]">Confirmar nova senha</label>
                     <input
                       type="password"
                       value={confirmOwnPassword}
                       onChange={(event) => setConfirmOwnPassword(event.target.value)}
-                      className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-sm"
+                      className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-sm"
                       placeholder="Repita a nova senha"
                     />
                     <button
                       type="submit"
                       disabled={busy || !newOwnPassword.trim() || !confirmOwnPassword.trim()}
-                      className="w-full rounded bg-[#404249] hover:bg-[#404249] px-2 py-1 text-sm disabled:opacity-60"
+                      className="w-full rounded bg-[var(--tk-bg-active)] hover:bg-[var(--tk-bg-active)] px-2 py-1 text-sm disabled:opacity-60"
                     >
                       Alterar senha
                     </button>
-                    <p className="text-[11px] text-[#80848E]">A alteração não exige senha atual.</p>
+                    <p className="text-[11px] text-[var(--tk-text-faint)]">A alteração não exige senha atual.</p>
                   </form>
 
-                  <form onSubmit={saveVoiceJoinPreferences} className="space-y-2 rounded border border-[#1F2023] bg-[#2B2D31]/60 p-3">
+                  <form onSubmit={saveVoiceJoinPreferences} className="space-y-2 rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)]/60 p-3">
                     <p className="text-sm font-medium">Preferências</p>
-                    <label className="flex items-center gap-2 text-xs text-[#B5BAC1]">
+                    <label className="flex items-center gap-2 text-xs text-[var(--tk-text-muted)]">
                       <input
                         type="checkbox"
                         checked={joinWithMicEnabled}
@@ -7733,7 +8166,7 @@ export function AppShell() {
                       />
                       Entrar com microfone ligado
                     </label>
-                    <label className="flex items-center gap-2 text-xs text-[#B5BAC1]">
+                    <label className="flex items-center gap-2 text-xs text-[var(--tk-text-muted)]">
                       <input
                         type="checkbox"
                         checked={joinWithCameraEnabled}
@@ -7741,7 +8174,7 @@ export function AppShell() {
                       />
                       Entrar com câmera ligada
                     </label>
-                    <label className="flex items-center gap-2 text-xs text-[#B5BAC1]">
+                    <label className="flex items-center gap-2 text-xs text-[var(--tk-text-muted)]">
                       <input
                         type="checkbox"
                         checked={noiseSuppressionEnabled}
@@ -7750,10 +8183,10 @@ export function AppShell() {
                       Ativar antirruído no microfone
                     </label>
                     {noiseSuppressionEnabled && (
-                      <div className="rounded border border-[#1F2023] bg-[#1E1F22]/60 p-2">
-                        <p className="text-[11px] text-[#949BA4] mb-1">Qualidade do antirruído:</p>
+                      <div className="rounded border border-[var(--tk-line)] bg-[var(--tk-bg-deep)]/60 p-2">
+                        <p className="text-[11px] text-[var(--tk-text-subtle)] mb-1">Qualidade do antirruído:</p>
                         <div className="space-y-1">
-                          <label className="flex items-center gap-2 text-xs text-[#B5BAC1]">
+                          <label className="flex items-center gap-2 text-xs text-[var(--tk-text-muted)]">
                             <input
                               type="radio"
                               name="noiseMode"
@@ -7762,7 +8195,7 @@ export function AppShell() {
                             />
                             <span>RNNoise (rápido, leve)</span>
                           </label>
-                          <label className="flex items-center gap-2 text-xs text-[#B5BAC1]">
+                          <label className="flex items-center gap-2 text-xs text-[var(--tk-text-muted)]">
                             <input
                               type="radio"
                               name="noiseMode"
@@ -7774,7 +8207,7 @@ export function AppShell() {
                         </div>
                       </div>
                     )}
-                    <label className="flex items-center gap-2 text-xs text-[#B5BAC1]">
+                    <label className="flex items-center gap-2 text-xs text-[var(--tk-text-muted)]">
                       <input
                         type="checkbox"
                         checked={chatNotificationSoundEnabled}
@@ -7782,10 +8215,10 @@ export function AppShell() {
                       />
                       Tocar som em novas mensagens diretas (DM)
                     </label>
-                    <div className="rounded border border-[#1F2023] bg-[#1E1F22]/60 p-2 space-y-2">
+                    <div className="rounded border border-[var(--tk-line)] bg-[var(--tk-bg-deep)]/60 p-2 space-y-2">
                       <div>
-                        <p className="text-[11px] text-[#949BA4] mb-1">
-                          Ganho do microfone: <span className="text-[#F2F3F5] font-medium">{micGain}%</span>
+                        <p className="text-[11px] text-[var(--tk-text-subtle)] mb-1">
+                          Ganho do microfone: <span className="text-[var(--tk-text-strong)] font-medium">{micGain}%</span>
                         </p>
                         <input
                           type="range"
@@ -7795,12 +8228,12 @@ export function AppShell() {
                           onChange={(event) => setMicGain(Number(event.target.value))}
                           className="w-full accent-emerald-500"
                         />
-                        <p className="text-[10px] text-[#80848E]">100% = normal. Aumente se os outros ouvirem baixo.</p>
+                        <p className="text-[10px] text-[var(--tk-text-faint)]">100% = normal. Aumente se os outros ouvirem baixo.</p>
                       </div>
                       <button
                         type="button"
                         onClick={() => setMicLevelMeterActive((value) => !value)}
-                        className="w-full rounded bg-[#383A40] hover:bg-[#404249] px-2 py-1 text-xs"
+                        className="w-full rounded bg-[var(--tk-bg-elev)] hover:bg-[var(--tk-bg-active)] px-2 py-1 text-xs"
                       >
                         {micLevelMeterActive ? "Parar de medir" : "Medir nível do microfone"}
                       </button>
@@ -7808,15 +8241,15 @@ export function AppShell() {
                     </div>
 
                     {/* Keybinds section */}
-                    <div className="rounded border border-[#1F2023] bg-[#1E1F22]/60 p-2 space-y-2">
-                      <p className="text-[11px] text-[#949BA4] mb-1">Teclas de atalho:</p>
+                    <div className="rounded border border-[var(--tk-line)] bg-[var(--tk-bg-deep)]/60 p-2 space-y-2">
+                      <p className="text-[11px] text-[var(--tk-text-subtle)] mb-1">Teclas de atalho:</p>
                       {Object.entries(KEYBIND_LABELS).map(([action, label]) => (
                         <div key={action} className="flex items-center justify-between gap-2">
-                          <span className="text-xs text-[#B5BAC1] shrink-0">{label}</span>
+                          <span className="text-xs text-[var(--tk-text-muted)] shrink-0">{label}</span>
                           <div className="flex items-center gap-1">
                             {editingKeybind === action ? (
                               <div
-                                className="rounded bg-[#5865F2] px-2 py-0.5 text-xs text-white min-w-[80px] text-center animate-pulse cursor-pointer"
+                                className="rounded bg-[var(--tk-accent)] px-2 py-0.5 text-xs text-white min-w-[80px] text-center animate-pulse cursor-pointer"
                                 tabIndex={0}
                                 autoFocus
                                 onKeyDown={(event) => {
@@ -7847,7 +8280,7 @@ export function AppShell() {
                               <button
                                 type="button"
                                 onClick={() => setEditingKeybind(action)}
-                                className="rounded bg-[#383A40] hover:bg-[#404249] px-2 py-0.5 text-xs text-[#B5BAC1] min-w-[80px] text-center"
+                                className="rounded bg-[var(--tk-bg-elev)] hover:bg-[var(--tk-bg-active)] px-2 py-0.5 text-xs text-[var(--tk-text-muted)] min-w-[80px] text-center"
                               >
                                 {keybinds[action] || "Nenhum"}
                               </button>
@@ -7865,13 +8298,13 @@ export function AppShell() {
                           </div>
                         </div>
                       ))}
-                      <p className="text-[10px] text-[#80848E]">Clique para definir, Esc para cancelar, ✕ para remover.</p>
+                      <p className="text-[10px] text-[var(--tk-text-faint)]">Clique para definir, Esc para cancelar, ✕ para remover.</p>
                     </div>
 
                     <button
                       type="submit"
                       disabled={busy}
-                      className="w-full rounded bg-[#404249] hover:bg-[#404249] px-2 py-1 text-sm disabled:opacity-60"
+                      className="w-full rounded bg-[var(--tk-bg-active)] hover:bg-[var(--tk-bg-active)] px-2 py-1 text-sm disabled:opacity-60"
                     >
                       Salvar preferências
                     </button>
@@ -7896,9 +8329,9 @@ export function AppShell() {
 
               {settingsPanelMode === "all" && canManageChannels && (
                 <form onSubmit={createChannel} className="space-y-2">
-                  <label className="text-xs text-[#949BA4]">Novo canal</label>
+                  <label className="text-xs text-[var(--tk-text-subtle)]">Novo canal</label>
                   <input
-                    className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-sm"
+                    className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-sm"
                     value={newChannelName}
                     onChange={(event) => setNewChannelName(event.target.value)}
                     placeholder="Nome do canal"
@@ -7906,12 +8339,12 @@ export function AppShell() {
                   <select
                     value={newChannelType}
                     onChange={(event) => setNewChannelType(event.target.value as ChannelType)}
-                    className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-sm"
+                    className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-sm"
                   >
                     <option value="text">Texto</option>
                     <option value="voice">Voz</option>
                   </select>
-                  <button type="submit" disabled={busy} className="w-full rounded bg-[#404249] px-2 py-1 text-sm">
+                  <button type="submit" disabled={busy} className="w-full rounded bg-[var(--tk-bg-active)] px-2 py-1 text-sm">
                     Criar canal
                   </button>
                 </form>
@@ -7920,9 +8353,9 @@ export function AppShell() {
               {settingsPanelMode === "all" && isSelectedServerOwner && (
                 <>
                   <form onSubmit={saveMember} className="space-y-2">
-                    <label className="text-xs text-[#949BA4]">Membro / função</label>
+                    <label className="text-xs text-[var(--tk-text-subtle)]">Membro / função</label>
                     <input
-                      className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-sm"
+                      className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-sm"
                       value={newMemberId}
                       onChange={(event) => setNewMemberId(event.target.value)}
                       placeholder="ID do usuário"
@@ -7930,14 +8363,14 @@ export function AppShell() {
                     <select
                       value={newMemberRole}
                       onChange={(event) => setNewMemberRole(event.target.value as Role)}
-                      className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-sm"
+                      className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-sm"
                     >
                       <option value="member">member</option>
                       <option value="moderator">moderator</option>
                       <option value="admin">admin</option>
                     </select>
                     {newMemberRole === "moderator" && (
-                      <div className="space-y-1 rounded border border-[#1F2023] bg-[#2B2D31] px-2 py-2 text-xs">
+                      <div className="space-y-1 rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)] px-2 py-2 text-xs">
                         <label className="flex items-center gap-2">
                           <input
                             type="checkbox"
@@ -8018,15 +8451,15 @@ export function AppShell() {
                         </label>
                       </div>
                     )}
-                    <button type="submit" disabled={busy} className="w-full rounded bg-[#404249] px-2 py-1 text-sm">
+                    <button type="submit" disabled={busy} className="w-full rounded bg-[var(--tk-bg-active)] px-2 py-1 text-sm">
                       Salvar membro
                     </button>
                   </form>
 
                   <form onSubmit={runModerationAction} className="space-y-2">
-                    <label className="text-xs text-[#949BA4]">Moderação</label>
+                    <label className="text-xs text-[var(--tk-text-subtle)]">Moderação</label>
                     <input
-                      className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-sm"
+                      className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-sm"
                       value={moderationTargetId}
                       onChange={(event) => setModerationTargetId(event.target.value)}
                       placeholder="ID do usuário alvo"
@@ -8034,7 +8467,7 @@ export function AppShell() {
                     <select
                       value={moderationAction}
                       onChange={(event) => setModerationAction(event.target.value as "remove-user" | "ban-user" | "voice-timeout" | "voice-kick" | "voice-move")}
-                      className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-sm"
+                      className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-sm"
                     >
                       <option value="ban-user">Banir do servidor</option>
                       <option value="remove-user">Remover do servidor</option>
@@ -8049,7 +8482,7 @@ export function AppShell() {
                         max={4320}
                         value={moderationDurationMinutes}
                         onChange={(event) => setModerationDurationMinutes(Number(event.target.value || 1))}
-                        className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-sm"
+                        className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-sm"
                         placeholder="Minutos"
                       />
                     )}
@@ -8057,7 +8490,7 @@ export function AppShell() {
                       <select
                         value={moderationTargetChannelId}
                         onChange={(event) => setModerationTargetChannelId(event.target.value)}
-                        className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-sm"
+                        className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-sm"
                       >
                         <option value="">Selecione o canal de voz destino</option>
                         {serverDetails?.server.channels
@@ -8082,11 +8515,11 @@ export function AppShell() {
                     <textarea
                       value={moderationReason}
                       onChange={(event) => setModerationReason(event.target.value)}
-                      className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-sm"
+                      className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-sm"
                       rows={2}
                       placeholder="Motivo da ação"
                     />
-                    <button type="submit" disabled={busy} className="w-full rounded bg-[#404249] px-2 py-1 text-sm">
+                    <button type="submit" disabled={busy} className="w-full rounded bg-[var(--tk-bg-active)] px-2 py-1 text-sm">
                       Executar ação
                     </button>
                   </form>
@@ -8095,9 +8528,9 @@ export function AppShell() {
 
               {settingsPanelMode === "all" && serverDetails?.currentRole === "admin" && !isSelectedServerOwner && (
                 <form onSubmit={runModerationAction} className="space-y-2">
-                  <label className="text-xs text-[#949BA4]">Moderação</label>
+                  <label className="text-xs text-[var(--tk-text-subtle)]">Moderação</label>
                   <input
-                    className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-sm"
+                    className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-sm"
                     value={moderationTargetId}
                     onChange={(event) => setModerationTargetId(event.target.value)}
                     placeholder="ID do usuário alvo"
@@ -8105,7 +8538,7 @@ export function AppShell() {
                   <select
                     value={moderationAction}
                     onChange={(event) => setModerationAction(event.target.value as "remove-user" | "ban-user" | "voice-timeout" | "voice-kick" | "voice-move")}
-                    className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-sm"
+                    className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-sm"
                   >
                     <option value="ban-user">Banir do servidor</option>
                     <option value="remove-user">Remover do servidor</option>
@@ -8120,7 +8553,7 @@ export function AppShell() {
                       max={4320}
                       value={moderationDurationMinutes}
                       onChange={(event) => setModerationDurationMinutes(Number(event.target.value || 1))}
-                      className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-sm"
+                      className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-sm"
                       placeholder="Minutos"
                     />
                   )}
@@ -8128,7 +8561,7 @@ export function AppShell() {
                     <select
                       value={moderationTargetChannelId}
                       onChange={(event) => setModerationTargetChannelId(event.target.value)}
-                      className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-sm"
+                      className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-sm"
                     >
                       <option value="">Selecione o canal de voz destino</option>
                       {serverDetails?.server.channels
@@ -8153,11 +8586,11 @@ export function AppShell() {
                   <textarea
                     value={moderationReason}
                     onChange={(event) => setModerationReason(event.target.value)}
-                    className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-sm"
+                    className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-sm"
                     rows={2}
                     placeholder="Motivo da ação"
                   />
-                  <button type="submit" disabled={busy} className="w-full rounded bg-[#404249] px-2 py-1 text-sm">
+                  <button type="submit" disabled={busy} className="w-full rounded bg-[var(--tk-bg-active)] px-2 py-1 text-sm">
                     Executar ação
                   </button>
                 </form>
@@ -8165,9 +8598,9 @@ export function AppShell() {
 
               {settingsPanelMode === "all" && serverDetails?.currentRole === "moderator" && (
                 <form onSubmit={runModerationAction} className="space-y-2">
-                  <label className="text-xs text-[#949BA4]">Moderação</label>
+                  <label className="text-xs text-[var(--tk-text-subtle)]">Moderação</label>
                   <input
-                    className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-sm"
+                    className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-sm"
                     value={moderationTargetId}
                     onChange={(event) => setModerationTargetId(event.target.value)}
                     placeholder="ID do usuário alvo"
@@ -8175,7 +8608,7 @@ export function AppShell() {
                   <select
                     value={moderationAction}
                     onChange={(event) => setModerationAction(event.target.value as "remove-user" | "ban-user" | "voice-timeout" | "voice-kick" | "voice-move")}
-                    className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-sm"
+                    className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-sm"
                   >
                     <option value="ban-user">Banir do servidor</option>
                     <option value="remove-user">Remover do servidor</option>
@@ -8190,7 +8623,7 @@ export function AppShell() {
                       max={4320}
                       value={moderationDurationMinutes}
                       onChange={(event) => setModerationDurationMinutes(Number(event.target.value || 1))}
-                      className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-sm"
+                      className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-sm"
                       placeholder="Minutos"
                     />
                   )}
@@ -8198,7 +8631,7 @@ export function AppShell() {
                     <select
                       value={moderationTargetChannelId}
                       onChange={(event) => setModerationTargetChannelId(event.target.value)}
-                      className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-sm"
+                      className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-sm"
                     >
                       <option value="">Selecione o canal de voz destino</option>
                       {serverDetails?.server.channels
@@ -8223,11 +8656,11 @@ export function AppShell() {
                   <textarea
                     value={moderationReason}
                     onChange={(event) => setModerationReason(event.target.value)}
-                    className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-sm"
+                    className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-sm"
                     rows={2}
                     placeholder="Motivo da ação"
                   />
-                  <button type="submit" disabled={busy} className="w-full rounded bg-[#404249] px-2 py-1 text-sm">
+                  <button type="submit" disabled={busy} className="w-full rounded bg-[var(--tk-bg-active)] px-2 py-1 text-sm">
                     Executar ação
                   </button>
                 </form>
@@ -8241,10 +8674,27 @@ export function AppShell() {
           )}
           {error && <p style={{ opacity: errorOpacity, transition: 'opacity 0.3s ease' }} className="mb-2 rounded-[4px] bg-[#F23F42]/10 border border-[#F23F42]/30 px-3 py-2 text-sm text-[#F23F42]">{error}</p>}
 
-          {!showSettingsPanel && appMode === "server" && !selectedChannel && <p className="text-[#949BA4]">Selecione um canal.</p>}
+          {!showSettingsPanel && appMode === "server" && !selectedChannel && <p className="text-[var(--tk-text-subtle)]">Selecione um canal.</p>}
 
           {!showSettingsPanel && appMode === "direct" && (
-            <div className="flex-1 min-h-0 flex flex-col">
+            <div className={`relative flex-1 min-h-0 flex flex-col ${isDraggingChatFile ? "ring-2 ring-inset ring-[var(--tk-accent)]" : ""}`}
+              onDragOver={(event) => {
+                if (!event.dataTransfer.types.includes("Files")) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "copy";
+                setIsDraggingChatFile(true);
+              }}
+              onDragLeave={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setIsDraggingChatFile(false);
+              }}
+              onDrop={(event) => {
+                if (!event.dataTransfer.types.includes("Files")) return;
+                event.preventDefault();
+                setIsDraggingChatFile(false);
+                if (busy || !selectedDirectConversationId) return;
+                applyDirectFileSelection(Array.from(event.dataTransfer.files), true);
+              }}>
+              {isDraggingChatFile && <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-[var(--tk-accent)]/20 text-lg font-semibold text-white">Solte os arquivos para anexar</div>}
               <div className="mb-2 flex items-center justify-between gap-2">
                 <h3 className="font-medium">
                   {selectedDirectConversation ? (
@@ -8262,7 +8712,7 @@ export function AppShell() {
                     type="button"
                     onClick={() => void toggleDirectBlock()}
                     disabled={busy}
-                    className="rounded bg-[#383A40] hover:bg-[#404249] border border-[#3F4147] px-2 py-1 text-xs disabled:opacity-60"
+                    className="rounded bg-[var(--tk-bg-elev)] hover:bg-[var(--tk-bg-active)] border border-[var(--tk-border)] px-2 py-1 text-xs disabled:opacity-60"
                   >
                     {blockedDirectUserIds.includes(selectedDirectConversation.otherUserId) ? "Desbloquear" : "Bloquear"}
                   </button>
@@ -8276,22 +8726,22 @@ export function AppShell() {
                 className="h-full overflow-y-auto px-4 py-4 space-y-4"
               >
                 {isLoadingOlderDirectMessages && (
-                  <p className="text-[#949BA4] text-xs">Carregando mensagens antigas...</p>
+                  <p className="text-[var(--tk-text-subtle)] text-xs">Carregando mensagens antigas...</p>
                 )}
                 {!hasMoreDirectMessages && directMessages.length > 0 && (
-                  <p className="text-[#949BA4] text-xs">Início do histórico</p>
+                  <p className="text-[var(--tk-text-subtle)] text-xs">Início do histórico</p>
                 )}
 
                 {directMessages.map((message) => (
-                  <div key={message.id} data-message-id={message.id} className="text-sm min-w-0 py-0.5 px-1 hover:bg-[#2E3035] rounded group">
+                  <div key={message.id} data-message-id={message.id} className="text-sm min-w-0 py-0.5 px-1 hover:bg-[var(--tk-bg-hover)] rounded group">
                     {(() => {
                       const friendRequestMarker = parseDirectFriendRequestMarker(message.content);
 
                       return (
                         <>
-                    <div className="text-[#949BA4] text-xs flex items-center justify-between gap-2">
+                    <div className="text-[var(--tk-text-subtle)] text-xs flex items-center justify-between gap-2">
                       <div className="flex items-center gap-1">
-                        <StyledDisplayName displayName={message.senderName} style={message.senderDisplayNameStyle} className="text-[#B5BAC1]" />
+                        <StyledDisplayName displayName={message.senderName} style={message.senderDisplayNameStyle} className="text-[var(--tk-text-muted)]" />
                         <span>·</span>
                         <span>{new Date(message.createdAt).toLocaleTimeString()}</span>
                       </div>
@@ -8299,13 +8749,13 @@ export function AppShell() {
                         <button
                           type="button"
                           onClick={() => setReactionPickerMessageId((prev) => prev?.id === message.id ? null : { id: message.id, type: "direct" })}
-                          className="w-7 h-7 flex items-center justify-center rounded hover:bg-[#383A40] text-[#B5BAC1] hover:text-[#DBDEE1] transition-colors"
+                          className="w-7 h-7 flex items-center justify-center rounded hover:bg-[var(--tk-bg-elev)] text-[var(--tk-text-muted)] hover:text-[var(--tk-text)] transition-colors"
                           title="Adicionar reação"
                         >
                           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
                         </button>
                         {reactionPickerMessageId?.id === message.id && reactionPickerMessageId.type === "direct" && (
-                          <div className="absolute right-0 top-8 z-50 rounded border border-[#1F2023] bg-[#1E1F22] p-1 shadow-lg">
+                          <div className="absolute right-0 top-8 z-50 rounded border border-[var(--tk-line)] bg-[var(--tk-bg-deep)] p-1 shadow-lg">
                             <Picker
                               data={emojiData}
                               onEmojiSelect={(emoji: { native?: string }) => {
@@ -8323,7 +8773,7 @@ export function AppShell() {
                         <button
                           type="button"
                           onClick={() => { setReplyingToDirectMessage({ id: message.id, senderName: message.senderName, content: message.content }); setTimeout(() => dmTextareaRef.current?.focus(), 0); }}
-                          className="w-7 h-7 flex items-center justify-center rounded hover:bg-[#383A40] text-[#B5BAC1] hover:text-[#DBDEE1] transition-colors"
+                          className="w-7 h-7 flex items-center justify-center rounded hover:bg-[var(--tk-bg-elev)] text-[var(--tk-text-muted)] hover:text-[var(--tk-text)] transition-colors"
                           title="Responder"
                         >
                           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11Z"/></svg>
@@ -8334,7 +8784,7 @@ export function AppShell() {
                               type="button"
                               disabled={busy}
                               onClick={() => startEditingDirectMessage(message)}
-                              className="w-7 h-7 flex items-center justify-center rounded hover:bg-[#383A40] text-[#B5BAC1] hover:text-[#DBDEE1] transition-colors disabled:opacity-60"
+                              className="w-7 h-7 flex items-center justify-center rounded hover:bg-[var(--tk-bg-elev)] text-[var(--tk-text-muted)] hover:text-[var(--tk-text)] transition-colors disabled:opacity-60"
                               title="Editar"
                             >
                               <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25ZM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83Z"/></svg>
@@ -8343,7 +8793,7 @@ export function AppShell() {
                               type="button"
                               disabled={busy}
                               onClick={() => void removeDirectMessage(message.id)}
-                              className="w-7 h-7 flex items-center justify-center rounded hover:bg-[#383A40] text-[#FA777C] hover:text-[#FBB4B7] transition-colors disabled:opacity-60"
+                              className="w-7 h-7 flex items-center justify-center rounded hover:bg-[var(--tk-bg-elev)] text-[#FA777C] hover:text-[#FBB4B7] transition-colors disabled:opacity-60"
                               title="Excluir"
                             >
                               <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12ZM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4Z"/></svg>
@@ -8356,7 +8806,7 @@ export function AppShell() {
                     {editingDirectMessageId === message.id ? (
                       <div className="mt-1 space-y-2">
                         <textarea
-                          className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-sm min-h-[44px] max-h-56 resize-y whitespace-pre-wrap"
+                          className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-sm min-h-[44px] max-h-56 resize-y whitespace-pre-wrap"
                           value={editingDirectMessageContent}
                           onChange={(event) => setEditingDirectMessageContent(event.target.value)}
                           disabled={busy}
@@ -8366,7 +8816,7 @@ export function AppShell() {
                             type="button"
                             onClick={() => void saveEditedDirectMessage(message.id)}
                             disabled={busy}
-                            className="rounded bg-[#5865F2] hover:bg-[#5865F2] px-2 py-1 text-xs disabled:opacity-60"
+                            className="rounded bg-[var(--tk-accent)] hover:bg-[var(--tk-accent)] px-2 py-1 text-xs disabled:opacity-60"
                           >
                             Salvar
                           </button>
@@ -8374,7 +8824,7 @@ export function AppShell() {
                             type="button"
                             onClick={cancelEditingDirectMessage}
                             disabled={busy}
-                            className="rounded bg-[#404249] hover:bg-[#404249] px-2 py-1 text-xs disabled:opacity-60"
+                            className="rounded bg-[var(--tk-bg-active)] hover:bg-[var(--tk-bg-active)] px-2 py-1 text-xs disabled:opacity-60"
                           >
                             Cancelar
                           </button>
@@ -8386,7 +8836,7 @@ export function AppShell() {
                       (() => {
                         const textOnly = getDirectMessageTextOnly(message.content);
                         if (!textOnly) {
-                          return <div className="text-[#949BA4] text-xs">(mensagem sem conteúdo)</div>;
+                          return <div className="text-[var(--tk-text-subtle)] text-xs">(mensagem sem conteúdo)</div>;
                         }
                         const parsed = parseReplyPrefix(textOnly);
                         const displayContent = parsed ? parsed.rest : textOnly;
@@ -8395,7 +8845,7 @@ export function AppShell() {
                             {parsed && (
                               <button
                                 type="button"
-                                className="flex items-center gap-1.5 text-xs text-[#949BA4] mb-0.5 pl-0.5 border-l-2 border-[#4E5058] ml-0.5 cursor-pointer hover:text-[#C4C9CE] transition-colors"
+                                className="flex items-center gap-1.5 text-xs text-[var(--tk-text-subtle)] mb-0.5 pl-0.5 border-l-2 border-[var(--tk-border-strong)] ml-0.5 cursor-pointer hover:text-[var(--tk-text-soft)] transition-colors"
                                 onClick={() => {
                                   if (parsed.replyMessageId) {
                                     scrollToAndFlashMessage(parsed.replyMessageId, directMessagesContainerRef);
@@ -8406,7 +8856,7 @@ export function AppShell() {
                                 }}
                               >
                                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" className="shrink-0 opacity-60"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11Z"/></svg>
-                                <span className="font-medium text-[#C4C9CE]">@{parsed.replyUserName}</span>
+                                <span className="font-medium text-[var(--tk-text-soft)]">@{parsed.replyUserName}</span>
                                 <span className="truncate max-w-[300px] opacity-70">{parsed.replyPreview || "(sem conteúdo)"}</span>
                               </button>
                             )}
@@ -8450,17 +8900,17 @@ export function AppShell() {
                 ))}
 
                 {selectedDirectConversationId && directMessages.length === 0 && (
-                  <p className="text-[#80848E] text-sm">Sem mensagens. Inicie a conversa.</p>
+                  <p className="text-[var(--tk-text-faint)] text-sm">Sem mensagens. Inicie a conversa.</p>
                 )}
                 {!selectedDirectConversationId && (
-                  <p className="text-[#80848E] text-sm">Selecione uma conversa direta.</p>
+                  <p className="text-[var(--tk-text-faint)] text-sm">Selecione uma conversa direta.</p>
                 )}
               </div>
               {showScrollToBottomDM && (
                 <button
                   type="button"
                   onClick={() => { scrollDirectMessagesToBottom(); setShowScrollToBottomDM(false); }}
-                  className="absolute bottom-4 right-6 z-20 flex items-center justify-center w-10 h-10 rounded-full bg-[#2B2D31] border border-[#3F4147] text-[#B5BAC1] hover:text-white hover:bg-[#383A40] shadow-lg transition-colors"
+                  className="absolute bottom-4 right-6 z-20 flex items-center justify-center w-10 h-10 rounded-full bg-[var(--tk-bg-panel)] border border-[var(--tk-border)] text-[var(--tk-text-muted)] hover:text-white hover:bg-[var(--tk-bg-elev)] shadow-lg transition-colors"
                   title="Ir para mensagens recentes"
                 >
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>
@@ -8473,7 +8923,7 @@ export function AppShell() {
                   <button
                     type="button"
                     onClick={scrollDirectMessagesToBottom}
-                    className="pointer-events-auto flex items-center gap-2 rounded-full border border-indigo-500 bg-[#5865F2]/90 px-4 py-1.5 text-xs font-medium text-white shadow-lg hover:bg-[#5865F2] transition-colors"
+                    className="pointer-events-auto flex items-center gap-2 rounded-full border border-indigo-500 bg-[var(--tk-accent)]/90 px-4 py-1.5 text-xs font-medium text-white shadow-lg hover:bg-[var(--tk-accent)] transition-colors"
                   >
                     <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 fill-current" aria-hidden="true">
                       <path d="M12 4l-1.5 1.5 4.5 4.5H6v2h9l-4.5 4.5L12 18l6-6z" transform="rotate(180 12 12)" />
@@ -8483,10 +8933,11 @@ export function AppShell() {
                 </div>
               )}
 
-              <form onSubmit={sendDirectMessage} className="space-y-0">
+              <form onSubmit={sendDirectMessage} className={`space-y-0 ${isMobile ? "px-2 pt-1.5 pb-[max(0.5rem,env(safe-area-inset-bottom))]" : ""}`}>
+                {newDirectMessage.length > 50_000 && <p className="px-3 py-2 text-xs text-amber-300">Ao enviar, este texto será convertido automaticamente em mensagem.txt (mais de 50.000 caracteres).</p>}
                 {activeDirectCustomPreview === "sticker" && (
-                  <div className="rounded border border-[#1F2023] bg-[#2B2D31]/50 p-2">
-                    <p className="mb-1 text-[11px] text-[#949BA4]">Figurinhas dos seus servidores</p>
+                  <div className="rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)]/50 p-2">
+                    <p className="mb-1 text-[11px] text-[var(--tk-text-subtle)]">Figurinhas dos seus servidores</p>
                     {directStickers.length > 0 ? (
                       <>
                         <div className="grid grid-cols-3 gap-2 sm:grid-cols-3">
@@ -8495,26 +8946,26 @@ export function AppShell() {
                               key={`direct-preview-sticker-${sticker.id}`}
                               type="button"
                               onClick={() => appendTokenToDirectMessage(`[sticker:${sticker.name}]`)}
-                              className="rounded border border-[#3F4147] bg-[#1E1F22] px-1 py-1 hover:bg-[#383A40]"
+                              className="rounded border border-[var(--tk-border)] bg-[var(--tk-bg-deep)] px-1 py-1 hover:bg-[var(--tk-bg-elev)]"
                               title={`Inserir figurinha: ${sticker.name}`}
                             >
                               <img
                                 src={sticker.url}
                                 alt={sticker.name}
-                                className="mx-auto h-12 w-12 rounded object-cover border border-[#1F2023]"
+                                className="mx-auto h-12 w-12 rounded object-cover border border-[var(--tk-line)]"
                               />
-                              <div className="mt-1 truncate text-[10px] text-[#B5BAC1]">{sticker.name}</div>
-                              <div className="truncate text-[9px] text-[#80848E]">{sticker.serverName}</div>
+                              <div className="mt-1 truncate text-[10px] text-[var(--tk-text-muted)]">{sticker.name}</div>
+                              <div className="truncate text-[9px] text-[var(--tk-text-faint)]">{sticker.serverName}</div>
                             </button>
                           ))}
                         </div>
                         {directStickerPageCount > 1 && (
-                          <div className="mt-2 flex items-center justify-between text-[11px] text-[#949BA4]">
+                          <div className="mt-2 flex items-center justify-between text-[11px] text-[var(--tk-text-subtle)]">
                             <button
                               type="button"
                               onClick={() => setDirectStickerPreviewPage((current) => Math.max(0, current - 1))}
                               disabled={directStickerPreviewPage === 0}
-                              className="rounded bg-[#383A40] px-2 py-1 disabled:opacity-50"
+                              className="rounded bg-[var(--tk-bg-elev)] px-2 py-1 disabled:opacity-50"
                             >
                               Anterior
                             </button>
@@ -8523,7 +8974,7 @@ export function AppShell() {
                               type="button"
                               onClick={() => setDirectStickerPreviewPage((current) => Math.min(directStickerPageCount - 1, current + 1))}
                               disabled={directStickerPreviewPage >= directStickerPageCount - 1}
-                              className="rounded bg-[#383A40] px-2 py-1 disabled:opacity-50"
+                              className="rounded bg-[var(--tk-bg-elev)] px-2 py-1 disabled:opacity-50"
                             >
                               Próxima
                             </button>
@@ -8531,13 +8982,13 @@ export function AppShell() {
                         )}
                       </>
                     ) : (
-                      <p className="text-[11px] text-[#80848E]">Nenhuma figurinha encontrada nos seus servidores.</p>
+                      <p className="text-[11px] text-[var(--tk-text-faint)]">Nenhuma figurinha encontrada nos seus servidores.</p>
                     )}
                   </div>
                 )}
                 {activeDirectCustomPreview === "emoji" && (
-                  <div className="rounded border border-[#1F2023] bg-[#2B2D31]/50 p-2">
-                    <p className="mb-1 text-[11px] text-[#949BA4]">Emojis dos seus servidores</p>
+                  <div className="rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)]/50 p-2">
+                    <p className="mb-1 text-[11px] text-[var(--tk-text-subtle)]">Emojis dos seus servidores</p>
                     {directEmojis.length > 0 ? (
                       <>
                         <div className="grid grid-cols-3 gap-2 sm:grid-cols-3">
@@ -8546,26 +8997,26 @@ export function AppShell() {
                               key={`direct-preview-emoji-${emoji.id}`}
                               type="button"
                               onClick={() => appendTokenToDirectMessage(`:${emoji.name}:`)}
-                              className="rounded border border-[#3F4147] bg-[#1E1F22] px-1 py-1 hover:bg-[#383A40]"
+                              className="rounded border border-[var(--tk-border)] bg-[var(--tk-bg-deep)] px-1 py-1 hover:bg-[var(--tk-bg-elev)]"
                               title={`Inserir emoji: ${emoji.name}`}
                             >
                               <img
                                 src={emoji.url}
                                 alt={emoji.name}
-                                className="mx-auto h-8 w-8 rounded-sm object-cover border border-[#1F2023]"
+                                className="mx-auto h-8 w-8 rounded-sm object-cover border border-[var(--tk-line)]"
                               />
-                              <div className="mt-1 truncate text-[10px] text-[#B5BAC1]">{emoji.name}</div>
-                              <div className="truncate text-[9px] text-[#80848E]">{emoji.serverName}</div>
+                              <div className="mt-1 truncate text-[10px] text-[var(--tk-text-muted)]">{emoji.name}</div>
+                              <div className="truncate text-[9px] text-[var(--tk-text-faint)]">{emoji.serverName}</div>
                             </button>
                           ))}
                         </div>
                         {directEmojiPageCount > 1 && (
-                          <div className="mt-2 flex items-center justify-between text-[11px] text-[#949BA4]">
+                          <div className="mt-2 flex items-center justify-between text-[11px] text-[var(--tk-text-subtle)]">
                             <button
                               type="button"
                               onClick={() => setDirectEmojiPreviewPage((current) => Math.max(0, current - 1))}
                               disabled={directEmojiPreviewPage === 0}
-                              className="rounded bg-[#383A40] px-2 py-1 disabled:opacity-50"
+                              className="rounded bg-[var(--tk-bg-elev)] px-2 py-1 disabled:opacity-50"
                             >
                               Anterior
                             </button>
@@ -8574,7 +9025,7 @@ export function AppShell() {
                               type="button"
                               onClick={() => setDirectEmojiPreviewPage((current) => Math.min(directEmojiPageCount - 1, current + 1))}
                               disabled={directEmojiPreviewPage >= directEmojiPageCount - 1}
-                              className="rounded bg-[#383A40] px-2 py-1 disabled:opacity-50"
+                              className="rounded bg-[var(--tk-bg-elev)] px-2 py-1 disabled:opacity-50"
                             >
                               Próxima
                             </button>
@@ -8582,12 +9033,12 @@ export function AppShell() {
                         )}
                       </>
                     ) : (
-                      <p className="text-[11px] text-[#80848E]">Nenhum emoji encontrado nos seus servidores.</p>
+                      <p className="text-[11px] text-[var(--tk-text-faint)]">Nenhum emoji encontrado nos seus servidores.</p>
                     )}
                   </div>
                 )}
                 {showDirectEmojiMartPicker && (
-                  <div className="rounded border border-[#1F2023] bg-[#1E1F22] p-2">
+                  <div className="rounded border border-[var(--tk-line)] bg-[var(--tk-bg-deep)] p-2">
                     <Picker
                       data={emojiData}
                       onEmojiSelect={(emoji: { native?: string }) => onDirectStandardEmojiSelect(emoji)}
@@ -8599,17 +9050,17 @@ export function AppShell() {
                   </div>
                 )}
                 {replyingToDirectMessage && (
-                  <div className="flex items-center gap-2 px-4 py-2 bg-[#2B2D31] rounded-t-lg border-b border-[#1E1F22] text-xs">
+                  <div className="flex items-center gap-2 px-4 py-2 bg-[var(--tk-bg-panel)] rounded-t-lg border-b border-[var(--tk-bg-deep)] text-xs">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="#B5BAC1" className="shrink-0"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11Z"/></svg>
-                    <span className="text-[#949BA4]">Respondendo a</span>
-                    <span className="text-[#C4C9CE] font-medium">@{replyingToDirectMessage.senderName}</span>
-                    <span className="text-[#949BA4] truncate max-w-[200px]">{replyingToDirectMessage.content ? replyingToDirectMessage.content.slice(0, 60).replace(/\n/g, " ") : "(imagem)"}</span>
-                    <button type="button" onClick={() => setReplyingToDirectMessage(null)} className="ml-auto text-[#B5BAC1] hover:text-white transition-colors" title="Cancelar resposta">
+                    <span className="text-[var(--tk-text-subtle)]">Respondendo a</span>
+                    <span className="text-[var(--tk-text-soft)] font-medium">@{replyingToDirectMessage.senderName}</span>
+                    <span className="text-[var(--tk-text-subtle)] truncate max-w-[200px]">{replyingToDirectMessage.content ? replyingToDirectMessage.content.slice(0, 60).replace(/\n/g, " ") : "(imagem)"}</span>
+                    <button type="button" onClick={() => setReplyingToDirectMessage(null)} className="ml-auto text-[var(--tk-text-muted)] hover:text-white transition-colors" title="Cancelar resposta">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
                     </button>
                   </div>
                 )}
-                <div className={`flex items-end bg-[#383A40] ${replyingToDirectMessage ? "rounded-b-lg" : "rounded-lg"}`}>
+                <div className={`flex bg-[var(--tk-bg-elev)] ${isMobile ? "flex-wrap items-center border border-[var(--tk-border)] px-1" : "items-end"} ${replyingToDirectMessage ? "rounded-b-2xl" : isMobile ? "rounded-2xl" : "rounded-lg"}`}>
                   <button
                     type="button"
                     onClick={() => {
@@ -8617,14 +9068,14 @@ export function AppShell() {
                       fileInput?.click();
                     }}
                     disabled={!selectedDirectConversationId}
-                    className="flex items-center justify-center w-11 h-11 shrink-0 text-[#B5BAC1] hover:text-[#DBDEE1] transition-colors disabled:opacity-60"
+                    className="flex items-center justify-center w-11 h-11 shrink-0 text-[var(--tk-text-muted)] hover:text-[var(--tk-text)] transition-colors disabled:opacity-60"
                     title="Enviar arquivo"
                   >
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
                   </button>
                   <textarea
                     ref={dmTextareaRef}
-                    className="flex-1 bg-transparent py-2.5 px-1 text-sm min-h-[44px] max-h-[50vh] resize-y outline-none placeholder-[#6D6F78]"
+                    className={`flex-1 min-w-0 bg-transparent py-2.5 px-1 min-h-[44px] outline-none placeholder-[var(--tk-text-faint)] ${isMobile ? "text-base resize-none max-h-[35vh]" : "text-sm resize-y max-h-[50vh]"}`}
                     value={newDirectMessage}
                     onChange={(event) => {
                       setNewDirectMessage(event.target.value);
@@ -8634,7 +9085,7 @@ export function AppShell() {
                     }}
                     onPaste={onDirectMessagePaste}
                     onKeyDown={(event) => {
-                      if (event.key === "Enter" && !event.shiftKey) {
+                      if (event.key === "Enter" && !event.shiftKey && !isMobile) {
                         event.preventDefault();
                         if (selectedDirectConversationId && !busy) {
                           (event.currentTarget.form as HTMLFormElement | null)?.requestSubmit();
@@ -8644,13 +9095,41 @@ export function AppShell() {
                     placeholder="Escreva uma mensagem direta"
                     disabled={!selectedDirectConversationId}
                     rows={1}
+                    enterKeyHint={isMobile ? "enter" : "send"}
                   />
-                  <div className="flex items-center gap-1 pr-2 shrink-0">
+                  {isMobile && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setShowMobileComposerTools((value) => !value)}
+                        aria-label={showMobileComposerTools ? "Esconder opções" : "Emojis e mais opções"}
+                        aria-expanded={showMobileComposerTools}
+                        className={`h-10 w-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${showMobileComposerTools ? "text-white bg-[var(--tk-bg-active)]" : "text-[var(--tk-text-muted)]"}`}
+                      >
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <circle cx="12" cy="12" r="9" />
+                          <path d="M8.5 14.5a4.5 4.5 0 0 0 7 0" />
+                          <path d="M9 9.5h.01M15 9.5h.01" />
+                        </svg>
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={busy || !selectedDirectConversationId || !(newDirectMessage.trim() || selectedDirectFiles.length > 0)}
+                        aria-label="Enviar mensagem"
+                        className="h-10 w-10 shrink-0 rounded-full neon-active flex items-center justify-center disabled:opacity-40 disabled:shadow-none"
+                      >
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                          <path d="M3.4 20.4 21 12 3.4 3.6 3.4 10l12.6 2-12.6 2z" />
+                        </svg>
+                      </button>
+                    </>
+                  )}
+                  <div className={isMobile ? (showMobileComposerTools ? "order-first w-full flex items-center justify-around py-1 border-b border-[var(--tk-border)]" : "hidden") : "flex items-center gap-1 pr-2 shrink-0"}>
                     <button
                       type="button"
                       onClick={() => { setActiveDirectCustomPreview((c) => { const n = c === "sticker" ? null : "sticker"; if (n === "sticker") setDirectStickerPreviewPage(0); return n; }); setShowDirectEmojiMartPicker(false); }}
                       disabled={!selectedDirectConversationId}
-                      className={`w-8 h-8 flex items-center justify-center rounded hover:bg-[#4E5058] transition-colors disabled:opacity-60 ${activeDirectCustomPreview === "sticker" ? "text-[#DBDEE1]" : "text-[#B5BAC1] hover:text-[#DBDEE1]"}`}
+                      className={`w-8 h-8 flex items-center justify-center rounded hover:bg-[var(--tk-border-strong)] transition-colors disabled:opacity-60 ${activeDirectCustomPreview === "sticker" ? "text-[var(--tk-text)]" : "text-[var(--tk-text-muted)] hover:text-[var(--tk-text)]"}`}
                       title="Figurinhas"
                     >
                       <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M18.92 11.03C18.72 6.58 15.09 3 10.5 3C5.81 3 2 6.81 2 11.5C2 16.19 5.81 20 10.5 20C10.67 20 10.84 20 11 19.97V19.5C11 17.57 12.57 16 14.5 16H15.97L18.92 11.03ZM7 13C6.45 13 6 12.55 6 12C6 11.45 6.45 11 7 11C7.55 11 8 11.45 8 12C8 12.55 7.55 13 7 13ZM10.5 16C9.95 16 9.5 15.55 9.5 15C9.5 14.45 9.95 14 10.5 14C11.05 14 11.5 14.45 11.5 15C11.5 15.55 11.05 16 10.5 16ZM10.5 10C9.95 10 9.5 9.55 9.5 9C9.5 8.45 9.95 8 10.5 8C11.05 8 11.5 8.45 11.5 9C11.5 9.55 11.05 10 10.5 10ZM14 13C13.45 13 13 12.55 13 12C13 11.45 13.45 11 14 11C14.55 11 15 11.45 15 12C15 12.55 14.55 13 14 13Z"/><path d="M20.49 14.13L14.13 20.49C13.53 21.09 12.74 21.44 11.9 21.49C12.1 21.5 12.3 21.5 12.5 21.5C12.5 21.5 22 21.5 22 12.5C22 12.3 22 12.1 21.99 11.9C21.94 12.74 21.59 13.53 20.49 14.13Z" opacity="0.5"/></svg>
@@ -8659,7 +9138,7 @@ export function AppShell() {
                       type="button"
                       onClick={() => { setActiveDirectCustomPreview((c) => { const n = c === "emoji" ? null : "emoji"; if (n === "emoji") setDirectEmojiPreviewPage(0); return n; }); setShowDirectEmojiMartPicker(false); }}
                       disabled={!selectedDirectConversationId}
-                      className={`w-8 h-8 flex items-center justify-center rounded hover:bg-[#4E5058] transition-colors disabled:opacity-60 ${activeDirectCustomPreview === "emoji" ? "text-[#DBDEE1]" : "text-[#B5BAC1] hover:text-[#DBDEE1]"}`}
+                      className={`w-8 h-8 flex items-center justify-center rounded hover:bg-[var(--tk-border-strong)] transition-colors disabled:opacity-60 ${activeDirectCustomPreview === "emoji" ? "text-[var(--tk-text)]" : "text-[var(--tk-text-muted)] hover:text-[var(--tk-text)]"}`}
                       title="Emojis do servidor"
                     >
                       <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM8.5 8C9.33 8 10 8.67 10 9.5C10 10.33 9.33 11 8.5 11C7.67 11 7 10.33 7 9.5C7 8.67 7.67 8 8.5 8ZM15.5 8C16.33 8 17 8.67 17 9.5C17 10.33 16.33 11 15.5 11C14.67 11 14 10.33 14 9.5C14 8.67 14.67 8 15.5 8ZM12 18C9.11 18 6.69 16.13 5.87 13.5H18.13C17.31 16.13 14.89 18 12 18Z"/></svg>
@@ -8668,7 +9147,7 @@ export function AppShell() {
                       type="button"
                       onClick={() => { setShowDirectEmojiMartPicker((c) => !c); setActiveDirectCustomPreview(null); }}
                       disabled={!selectedDirectConversationId}
-                      className={`w-8 h-8 flex items-center justify-center rounded hover:bg-[#4E5058] transition-colors disabled:opacity-60 ${showDirectEmojiMartPicker ? "text-[#DBDEE1]" : "text-[#B5BAC1] hover:text-[#DBDEE1]"}`}
+                      className={`w-8 h-8 flex items-center justify-center rounded hover:bg-[var(--tk-border-strong)] transition-colors disabled:opacity-60 ${showDirectEmojiMartPicker ? "text-[var(--tk-text)]" : "text-[var(--tk-text-muted)] hover:text-[var(--tk-text)]"}`}
                       title="Emoji padrão"
                     >
                       <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2ZM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8Zm3.5-9c.83 0 1.5-.67 1.5-1.5S16.33 8 15.5 8 14 8.67 14 9.5s.67 1.5 1.5 1.5Zm-7 0c.83 0 1.5-.67 1.5-1.5S9.33 8 8.5 8 7 8.67 7 9.5 7.67 11 8.5 11Zm3.5 6.5c2.33 0 4.31-1.46 5.11-3.5H6.89c.8 2.04 2.78 3.5 5.11 3.5Z"/></svg>
@@ -8677,7 +9156,7 @@ export function AppShell() {
                       type="button"
                       onClick={() => toggleSpoilerWrap(newDirectMessage, setNewDirectMessage)}
                       disabled={!selectedDirectConversationId}
-                      className="w-8 h-8 flex items-center justify-center rounded text-[#B5BAC1] hover:text-[#DBDEE1] hover:bg-[#4E5058] transition-colors disabled:opacity-60"
+                      className="w-8 h-8 flex items-center justify-center rounded text-[var(--tk-text-muted)] hover:text-[var(--tk-text)] hover:bg-[var(--tk-border-strong)] transition-colors disabled:opacity-60"
                       title="Marcar como spoiler"
                     >
                       <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5ZM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5Zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3Z"/></svg>
@@ -8686,7 +9165,7 @@ export function AppShell() {
                       type="button"
                       onClick={() => toggleCodeBlockWrap(newDirectMessage, setNewDirectMessage)}
                       disabled={!selectedDirectConversationId}
-                      className="w-8 h-8 flex items-center justify-center rounded text-[#B5BAC1] hover:text-[#DBDEE1] hover:bg-[#4E5058] transition-colors disabled:opacity-60"
+                      className="w-8 h-8 flex items-center justify-center rounded text-[var(--tk-text-muted)] hover:text-[var(--tk-text)] hover:bg-[var(--tk-border-strong)] transition-colors disabled:opacity-60"
                       title="Enviar como código"
                     >
                       <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M9.4 16.6 4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4Zm5.2 0L19.2 12l-4.6-4.6L16 6l6 6-6 6-1.4-1.4Z"/></svg>
@@ -8705,37 +9184,37 @@ export function AppShell() {
                   disabled={!selectedDirectConversationId}
                   className="hidden"
                 />
-                <p className="text-[11px] text-[#80848E]">
+                <p className="text-[11px] text-[var(--tk-text-faint)]">
                   Limite por arquivo: {formatUploadLimitMbLabel(channelUploadMaxFileSizeMb)} MB
                 </p>
                 {directUploadProgress !== null && (
-                  <div className="rounded border border-[#1F2023] bg-[#2B2D31]/70 p-2">
-                    <div className="mb-1 flex items-center justify-between text-[11px] text-[#B5BAC1]">
+                  <div className="rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)]/70 p-2">
+                    <div className="mb-1 flex items-center justify-between text-[11px] text-[var(--tk-text-muted)]">
                       <span>Enviando arquivos...</span>
                       <span>{directUploadProgress}%</span>
                     </div>
-                    <div className="h-2 w-full overflow-hidden rounded bg-[#383A40]">
+                    <div className="h-2 w-full overflow-hidden rounded bg-[var(--tk-bg-elev)]">
                       <div
-                        className="h-full bg-[#5865F2] transition-all"
+                        className="h-full bg-[var(--tk-accent)] transition-all"
                         style={{ width: `${directUploadProgress}%` }}
                       />
                     </div>
                   </div>
                 )}
                 {selectedDirectFiles.length > 0 && (
-                  <div className="rounded border border-[#1F2023] bg-[#2B2D31] px-2 py-2 text-xs text-[#B5BAC1] space-y-1">
-                    <div className="text-[#949BA4]">Arquivos selecionados:</div>
+                  <div className="rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)] px-2 py-2 text-xs text-[var(--tk-text-muted)] space-y-1">
+                    <div className="text-[var(--tk-text-subtle)]">Arquivos selecionados:</div>
                     {selectedDirectFiles.map((file) => {
                       const fileKey = getPendingFileKey(file);
                       const previewUrl = selectedDirectFilePreviewByKey[fileKey];
 
                       return (
-                        <div key={fileKey} className="rounded border border-[#1F2023] bg-[#1E1F22] p-2 space-y-1">
+                        <div key={fileKey} className="rounded border border-[var(--tk-line)] bg-[var(--tk-bg-deep)] p-2 space-y-1">
                           {previewUrl && (
                             <img
                               src={previewUrl}
                               alt={file.name}
-                              className="max-h-28 rounded border border-[#1F2023]"
+                              className="max-h-28 rounded border border-[var(--tk-line)]"
                             />
                           )}
                           <div className="break-all">{file.name}</div>
@@ -8757,11 +9236,36 @@ export function AppShell() {
           )}
 
           {!showSettingsPanel && appMode === "server" && selectedChannel?.type === "text" && (
-            <div className="flex-1 min-h-0 flex flex-col">
-              <div className="h-12 px-4 flex items-center border-b border-[#1F2023] shadow-sm shrink-0">
-                <span className="text-[#80848E] text-xl mr-1.5">#</span>
+            <div className={`relative flex-1 min-h-0 flex flex-col ${isDraggingChatFile ? "ring-2 ring-inset ring-[var(--tk-accent)]" : ""}`}
+              onDragOver={(event) => {
+                if (!event.dataTransfer.types.includes("Files")) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "copy";
+                setIsDraggingChatFile(true);
+              }}
+              onDragLeave={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setIsDraggingChatFile(false);
+              }}
+              onDrop={(event) => {
+                if (!event.dataTransfer.types.includes("Files")) return;
+                event.preventDefault();
+                setIsDraggingChatFile(false);
+                if (busy) return;
+                applyServerFileSelection(Array.from(event.dataTransfer.files), true);
+              }}>
+              {isDraggingChatFile && <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-[var(--tk-accent)]/20 text-lg font-semibold text-white">Solte os arquivos para anexar</div>}
+              <div className={`h-12 px-4 items-center border-b border-[var(--tk-line)] shadow-sm shrink-0 ${isMobile ? "hidden" : "flex"}`}>
+                <span className="text-[var(--tk-text-faint)] text-xl mr-1.5">#</span>
                 <h3 className="font-semibold text-white text-[15px]">{selectedChannel.name}</h3>
+                <button type="button" aria-expanded={showChannelSearch} onClick={() => setShowChannelSearch((value) => !value)}
+                  className="ml-auto rounded bg-[var(--tk-bg-elev)] px-3 py-1 text-sm text-white hover:bg-[var(--tk-border-strong)]">
+                  {showChannelSearch ? "Fechar busca" : "Pesquisar mensagens"}
+                </button>
               </div>
+              {showChannelSearch && selectedServerId && (
+                <ChannelMessageSearch key={`${selectedServerId}:${selectedChannel.id}`} serverId={selectedServerId} channelId={selectedChannel.id}
+                  members={(serverDetails?.server.members ?? []).map((member) => ({ userId: member.userId, userName: member.userName || member.userId }))} onSelectMessage={openSearchMessage} />
+              )}
               <div className="flex-1 min-h-0 relative">
               <div
                 ref={messagesContainerRef}
@@ -8769,10 +9273,10 @@ export function AppShell() {
                 className="h-full overflow-y-auto px-4 py-4 space-y-4"
               >
                 {isLoadingOlderMessages && (
-                  <p className="text-[#949BA4] text-xs">Carregando mensagens antigas...</p>
+                  <p className="text-[var(--tk-text-subtle)] text-xs">Carregando mensagens antigas...</p>
                 )}
                 {!hasMoreMessages && messages.length > 0 && (
-                  <p className="text-[#949BA4] text-xs">Início do histórico</p>
+                  <p className="text-[var(--tk-text-subtle)] text-xs">Início do histórico</p>
                 )}
                 {messages.map((message) => {
                   const canManageMessage = message.userId === userId || canModerateUserMessages;
@@ -8781,12 +9285,12 @@ export function AppShell() {
                   const messageAvatarUrl = messageMemberInfo?.avatarUrl ?? null;
 
                   return (
-                  <div key={message.id} data-message-id={message.id} className="text-sm min-w-0 flex gap-4 py-0.5 px-1 hover:bg-[#2E3035] rounded group">
+                  <div key={message.id} data-message-id={message.id} className="text-sm min-w-0 flex gap-4 py-0.5 px-1 hover:bg-[var(--tk-bg-hover)] rounded group">
                     <div className="shrink-0 mt-0.5">
                       {messageAvatarUrl ? (
                         <img src={messageAvatarUrl} alt={message.userName} className="h-10 w-10 rounded-full object-cover cursor-pointer" />
                       ) : (
-                        <div className="h-10 w-10 rounded-full bg-[#5865F2] flex items-center justify-center text-sm text-white font-semibold cursor-pointer">
+                        <div className="h-10 w-10 rounded-full bg-[var(--tk-accent)] flex items-center justify-center text-sm text-white font-semibold cursor-pointer">
                           {(message.userName || "U").slice(0, 1).toUpperCase()}
                         </div>
                       )}
@@ -8810,21 +9314,21 @@ export function AppShell() {
                           }}
                           className="display-name-wrapper rounded px-0.5 hover:underline cursor-pointer"
                         >
-                          <StyledDisplayName displayName={message.userName} style={message.userDisplayNameStyle} className="text-[#F2F3F5] font-medium" />
+                          <StyledDisplayName displayName={message.userName} style={message.userDisplayNameStyle} className="text-[var(--tk-text-strong)] font-medium" />
                         </button>
-                        <span className="text-[#949BA4] text-xs">{new Date(message.createdAt).toLocaleString()}</span>
+                        <span className="text-[var(--tk-text-subtle)] text-xs">{new Date(message.createdAt).toLocaleString()}</span>
                       </div>
                       <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity relative">
                           <button
                             type="button"
                             onClick={() => setReactionPickerMessageId((prev) => prev?.id === message.id ? null : { id: message.id, type: "server" })}
-                            className="w-7 h-7 flex items-center justify-center rounded hover:bg-[#383A40] text-[#B5BAC1] hover:text-[#DBDEE1] transition-colors"
+                            className="w-7 h-7 flex items-center justify-center rounded hover:bg-[var(--tk-bg-elev)] text-[var(--tk-text-muted)] hover:text-[var(--tk-text)] transition-colors"
                             title="Adicionar reação"
                           >
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
                           </button>
                           {reactionPickerMessageId?.id === message.id && reactionPickerMessageId.type === "server" && (
-                            <div className="absolute right-0 top-8 z-50 rounded border border-[#1F2023] bg-[#1E1F22] p-1 shadow-lg">
+                            <div className="absolute right-0 top-8 z-50 rounded border border-[var(--tk-line)] bg-[var(--tk-bg-deep)] p-1 shadow-lg">
                               <Picker
                                 data={emojiData}
                                 onEmojiSelect={(emoji: { native?: string }) => {
@@ -8842,7 +9346,7 @@ export function AppShell() {
                           <button
                             type="button"
                             onClick={() => { setReplyingToMessage({ id: message.id, userName: message.userName, content: message.content }); setTimeout(() => serverTextareaRef.current?.focus(), 0); }}
-                            className="w-7 h-7 flex items-center justify-center rounded hover:bg-[#383A40] text-[#B5BAC1] hover:text-[#DBDEE1] transition-colors"
+                            className="w-7 h-7 flex items-center justify-center rounded hover:bg-[var(--tk-bg-elev)] text-[var(--tk-text-muted)] hover:text-[var(--tk-text)] transition-colors"
                             title="Responder"
                           >
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11Z"/></svg>
@@ -8853,7 +9357,7 @@ export function AppShell() {
                                 type="button"
                                 disabled={busy}
                                 onClick={() => startEditingMessage(message)}
-                                className="w-7 h-7 flex items-center justify-center rounded hover:bg-[#383A40] text-[#B5BAC1] hover:text-[#DBDEE1] transition-colors disabled:opacity-60"
+                                className="w-7 h-7 flex items-center justify-center rounded hover:bg-[var(--tk-bg-elev)] text-[var(--tk-text-muted)] hover:text-[var(--tk-text)] transition-colors disabled:opacity-60"
                                 title="Editar"
                               >
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25ZM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83Z"/></svg>
@@ -8862,7 +9366,7 @@ export function AppShell() {
                                 type="button"
                                 disabled={busy}
                                 onClick={() => void removeMessage(message.id)}
-                                className="w-7 h-7 flex items-center justify-center rounded hover:bg-[#383A40] text-[#FA777C] hover:text-[#FBB4B7] transition-colors disabled:opacity-60"
+                                className="w-7 h-7 flex items-center justify-center rounded hover:bg-[var(--tk-bg-elev)] text-[#FA777C] hover:text-[#FBB4B7] transition-colors disabled:opacity-60"
                                 title="Excluir"
                               >
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12ZM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4Z"/></svg>
@@ -8874,7 +9378,7 @@ export function AppShell() {
                     {editingMessageId === message.id ? (
                       <div className="mt-1 space-y-2">
                         <textarea
-                          className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1 text-sm min-h-[44px] max-h-56 resize-y whitespace-pre-wrap"
+                          className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1 text-sm min-h-[44px] max-h-56 resize-y whitespace-pre-wrap"
                           value={editingMessageContent}
                           onChange={(event) => setEditingMessageContent(event.target.value)}
                           disabled={busy}
@@ -8884,7 +9388,7 @@ export function AppShell() {
                             type="button"
                             onClick={() => void saveEditedMessage(message.id)}
                             disabled={busy}
-                            className="rounded bg-[#5865F2] hover:bg-[#5865F2] px-2 py-1 text-xs disabled:opacity-60"
+                            className="rounded bg-[var(--tk-accent)] hover:bg-[var(--tk-accent)] px-2 py-1 text-xs disabled:opacity-60"
                           >
                             Salvar
                           </button>
@@ -8892,7 +9396,7 @@ export function AppShell() {
                             type="button"
                             onClick={cancelEditingMessage}
                             disabled={busy}
-                            className="rounded bg-[#404249] hover:bg-[#404249] px-2 py-1 text-xs disabled:opacity-60"
+                            className="rounded bg-[var(--tk-bg-active)] hover:bg-[var(--tk-bg-active)] px-2 py-1 text-xs disabled:opacity-60"
                           >
                             Cancelar
                           </button>
@@ -8910,7 +9414,7 @@ export function AppShell() {
                             {parsed && (
                               <button
                                 type="button"
-                                className="flex items-center gap-1.5 text-xs text-[#949BA4] mb-0.5 pl-0.5 border-l-2 border-[#4E5058] ml-0.5 cursor-pointer hover:text-[#C4C9CE] transition-colors"
+                                className="flex items-center gap-1.5 text-xs text-[var(--tk-text-subtle)] mb-0.5 pl-0.5 border-l-2 border-[var(--tk-border-strong)] ml-0.5 cursor-pointer hover:text-[var(--tk-text-soft)] transition-colors"
                                 onClick={() => {
                                   if (parsed.replyMessageId) {
                                     scrollToAndFlashMessage(parsed.replyMessageId, messagesContainerRef);
@@ -8921,7 +9425,7 @@ export function AppShell() {
                                 }}
                               >
                                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" className="shrink-0 opacity-60"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11Z"/></svg>
-                                <span className="font-medium text-[#C4C9CE]">@{parsed.replyUserName}</span>
+                                <span className="font-medium text-[var(--tk-text-soft)]">@{parsed.replyUserName}</span>
                                 <span className="truncate max-w-[300px] opacity-70">{parsed.replyPreview || "(sem conteúdo)"}</span>
                               </button>
                             )}
@@ -8940,7 +9444,7 @@ export function AppShell() {
                       onToggle={(emoji) => void toggleServerMessageReaction(message.id, emoji)}
                     />
                     {!message.content && (!message.attachments || message.attachments.length === 0) && (
-                      <div className="text-[#949BA4] text-xs">(mensagem sem conteúdo)</div>
+                      <div className="text-[var(--tk-text-subtle)] text-xs">(mensagem sem conteúdo)</div>
                     )}
                     {!!message.attachments?.length && (
                       <div className="mt-2 space-y-2">
@@ -8961,7 +9465,7 @@ export function AppShell() {
                                   <img
                                     src={attachment.url}
                                     alt={attachment.name}
-                                    className="max-h-72 rounded border border-[#1F2023]"
+                                    className="max-h-72 rounded border border-[var(--tk-line)]"
                                   />
                                 </a>
                                 {(message.userId === userId || canModerateUserMessages) && (
@@ -8983,7 +9487,7 @@ export function AppShell() {
                               <div key={attachment.id} className="space-y-1">
                                 <video
                                   controls
-                                  className="max-h-80 rounded border border-[#1F2023] w-full"
+                                  className="max-h-80 rounded border border-[var(--tk-line)] w-full"
                                   src={attachment.url}
                                 />
                                 {(message.userId === userId || canModerateUserMessages) && (
@@ -9029,10 +9533,10 @@ export function AppShell() {
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 onClick={(event) => onAttachmentDownloadClick(event, attachment)}
-                                className="block rounded border border-[#1F2023] bg-[#2B2D31] px-2 py-2 hover:bg-[#383A40]"
+                                className="block rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)] px-2 py-2 hover:bg-[var(--tk-bg-elev)]"
                               >
                                 <div className="font-medium break-all">{attachment.name}</div>
-                                <div className="text-xs text-[#949BA4]">
+                                <div className="text-xs text-[var(--tk-text-subtle)]">
                                   {attachment.mimeType} · {formatBytes(attachment.size)}
                                 </div>
                               </a>
@@ -9055,13 +9559,13 @@ export function AppShell() {
                   </div>
                 );
                 })}
-                {messages.length === 0 && <p className="text-[#949BA4] text-sm">Sem mensagens.</p>}
+                {messages.length === 0 && <p className="text-[var(--tk-text-subtle)] text-sm">Sem mensagens.</p>}
               </div>
               {showScrollToBottomServer && (
                 <button
                   type="button"
                   onClick={() => { scrollServerMessagesToBottom(); setShowScrollToBottomServer(false); }}
-                  className="absolute bottom-4 right-6 z-20 flex items-center justify-center w-10 h-10 rounded-full bg-[#2B2D31] border border-[#3F4147] text-[#B5BAC1] hover:text-white hover:bg-[#383A40] shadow-lg transition-colors"
+                  className="absolute bottom-4 right-6 z-20 flex items-center justify-center w-10 h-10 rounded-full bg-[var(--tk-bg-panel)] border border-[var(--tk-border)] text-[var(--tk-text-muted)] hover:text-white hover:bg-[var(--tk-bg-elev)] shadow-lg transition-colors"
                   title="Ir para mensagens recentes"
                 >
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>
@@ -9073,7 +9577,7 @@ export function AppShell() {
                   <button
                     type="button"
                     onClick={scrollServerMessagesToBottom}
-                    className="pointer-events-auto flex items-center gap-2 rounded-full border border-indigo-500 bg-[#5865F2]/90 px-4 py-1.5 text-xs font-medium text-white shadow-lg hover:bg-[#5865F2] transition-colors"
+                    className="pointer-events-auto flex items-center gap-2 rounded-full border border-indigo-500 bg-[var(--tk-accent)]/90 px-4 py-1.5 text-xs font-medium text-white shadow-lg hover:bg-[var(--tk-accent)] transition-colors"
                   >
                     <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 fill-current" aria-hidden="true">
                       <path d="M12 4l-1.5 1.5 4.5 4.5H6v2h9l-4.5 4.5L12 18l6-6z" transform="rotate(180 12 12)" />
@@ -9082,10 +9586,11 @@ export function AppShell() {
                   </button>
                 </div>
               )}
-              <form onSubmit={sendMessage} className="space-y-0">
+              <form onSubmit={sendMessage} className={`space-y-0 ${isMobile ? "px-2 pt-1.5 pb-[max(0.5rem,env(safe-area-inset-bottom))]" : ""}`}>
+                {newMessage.length > 50_000 && <p className="px-3 py-2 text-xs text-amber-300">Ao enviar, este texto será convertido automaticamente em mensagem.txt (mais de 50.000 caracteres).</p>}
                 {activeCustomPreview === "sticker" && (
-                  <div className="rounded border border-[#1F2023] bg-[#2B2D31]/50 p-2">
-                    <p className="mb-1 text-[11px] text-[#949BA4]">Preview de figurinhas do servidor</p>
+                  <div className="rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)]/50 p-2">
+                    <p className="mb-1 text-[11px] text-[var(--tk-text-subtle)]">Preview de figurinhas do servidor</p>
                     {(serverDetails?.server.stickers ?? []).length > 0 ? (
                       <>
                         <div className="grid grid-cols-3 gap-2 sm:grid-cols-3">
@@ -9094,25 +9599,25 @@ export function AppShell() {
                               key={`preview-sticker-${sticker.id}`}
                               type="button"
                               onClick={() => appendTokenToNewMessage(`[sticker:${sticker.name}]`)}
-                              className="rounded border border-[#3F4147] bg-[#1E1F22] px-1 py-1 hover:bg-[#383A40]"
+                              className="rounded border border-[var(--tk-border)] bg-[var(--tk-bg-deep)] px-1 py-1 hover:bg-[var(--tk-bg-elev)]"
                               title={`Inserir figurinha: ${sticker.name}`}
                             >
                               <img
                                 src={sticker.url}
                                 alt={sticker.name}
-                                className="mx-auto h-12 w-12 rounded object-cover border border-[#1F2023]"
+                                className="mx-auto h-12 w-12 rounded object-cover border border-[var(--tk-line)]"
                               />
-                              <div className="mt-1 truncate text-[10px] text-[#B5BAC1]">{sticker.name}</div>
+                              <div className="mt-1 truncate text-[10px] text-[var(--tk-text-muted)]">{sticker.name}</div>
                             </button>
                           ))}
                         </div>
                         {serverStickerPageCount > 1 && (
-                          <div className="mt-2 flex items-center justify-between text-[11px] text-[#949BA4]">
+                          <div className="mt-2 flex items-center justify-between text-[11px] text-[var(--tk-text-subtle)]">
                             <button
                               type="button"
                               onClick={() => setServerStickerPreviewPage((current) => Math.max(0, current - 1))}
                               disabled={serverStickerPreviewPage === 0}
-                              className="rounded bg-[#383A40] px-2 py-1 disabled:opacity-50"
+                              className="rounded bg-[var(--tk-bg-elev)] px-2 py-1 disabled:opacity-50"
                             >
                               Anterior
                             </button>
@@ -9121,7 +9626,7 @@ export function AppShell() {
                               type="button"
                               onClick={() => setServerStickerPreviewPage((current) => Math.min(serverStickerPageCount - 1, current + 1))}
                               disabled={serverStickerPreviewPage >= serverStickerPageCount - 1}
-                              className="rounded bg-[#383A40] px-2 py-1 disabled:opacity-50"
+                              className="rounded bg-[var(--tk-bg-elev)] px-2 py-1 disabled:opacity-50"
                             >
                               Próxima
                             </button>
@@ -9129,13 +9634,13 @@ export function AppShell() {
                         )}
                       </>
                     ) : (
-                      <p className="text-[11px] text-[#80848E]">Sem figurinhas cadastradas.</p>
+                      <p className="text-[11px] text-[var(--tk-text-faint)]">Sem figurinhas cadastradas.</p>
                     )}
                   </div>
                 )}
                 {activeCustomPreview === "emoji" && (
-                  <div className="rounded border border-[#1F2023] bg-[#2B2D31]/50 p-2">
-                    <p className="mb-1 text-[11px] text-[#949BA4]">Preview de emojis do servidor</p>
+                  <div className="rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)]/50 p-2">
+                    <p className="mb-1 text-[11px] text-[var(--tk-text-subtle)]">Preview de emojis do servidor</p>
                     {(serverDetails?.server.emojis ?? []).length > 0 ? (
                       <>
                         <div className="grid grid-cols-3 gap-2 sm:grid-cols-3">
@@ -9144,25 +9649,25 @@ export function AppShell() {
                               key={`preview-emoji-${emoji.id}`}
                               type="button"
                               onClick={() => appendTokenToNewMessage(`:${emoji.name}:`)}
-                              className="rounded border border-[#3F4147] bg-[#1E1F22] px-1 py-1 hover:bg-[#383A40]"
+                              className="rounded border border-[var(--tk-border)] bg-[var(--tk-bg-deep)] px-1 py-1 hover:bg-[var(--tk-bg-elev)]"
                               title={`Inserir emoji: ${emoji.name}`}
                             >
                               <img
                                 src={emoji.url}
                                 alt={emoji.name}
-                                className="mx-auto h-8 w-8 rounded-sm object-cover border border-[#1F2023]"
+                                className="mx-auto h-8 w-8 rounded-sm object-cover border border-[var(--tk-line)]"
                               />
-                              <div className="mt-1 truncate text-[10px] text-[#B5BAC1]">{emoji.name}</div>
+                              <div className="mt-1 truncate text-[10px] text-[var(--tk-text-muted)]">{emoji.name}</div>
                             </button>
                           ))}
                         </div>
                         {serverEmojiPageCount > 1 && (
-                          <div className="mt-2 flex items-center justify-between text-[11px] text-[#949BA4]">
+                          <div className="mt-2 flex items-center justify-between text-[11px] text-[var(--tk-text-subtle)]">
                             <button
                               type="button"
                               onClick={() => setServerEmojiPreviewPage((current) => Math.max(0, current - 1))}
                               disabled={serverEmojiPreviewPage === 0}
-                              className="rounded bg-[#383A40] px-2 py-1 disabled:opacity-50"
+                              className="rounded bg-[var(--tk-bg-elev)] px-2 py-1 disabled:opacity-50"
                             >
                               Anterior
                             </button>
@@ -9171,7 +9676,7 @@ export function AppShell() {
                               type="button"
                               onClick={() => setServerEmojiPreviewPage((current) => Math.min(serverEmojiPageCount - 1, current + 1))}
                               disabled={serverEmojiPreviewPage >= serverEmojiPageCount - 1}
-                              className="rounded bg-[#383A40] px-2 py-1 disabled:opacity-50"
+                              className="rounded bg-[var(--tk-bg-elev)] px-2 py-1 disabled:opacity-50"
                             >
                               Próxima
                             </button>
@@ -9179,12 +9684,12 @@ export function AppShell() {
                         )}
                       </>
                     ) : (
-                      <p className="text-[11px] text-[#80848E]">Sem emojis cadastrados.</p>
+                      <p className="text-[11px] text-[var(--tk-text-faint)]">Sem emojis cadastrados.</p>
                     )}
                   </div>
                 )}
                 {showEmojiMartPicker && (
-                  <div className="rounded border border-[#1F2023] bg-[#1E1F22] p-2">
+                  <div className="rounded border border-[var(--tk-line)] bg-[var(--tk-bg-deep)] p-2">
                     <Picker
                       data={emojiData}
                       onEmojiSelect={(emoji: { native?: string }) => onStandardEmojiSelect(emoji)}
@@ -9197,31 +9702,31 @@ export function AppShell() {
                 )}
 
                 {replyingToMessage && (
-                  <div className="flex items-center gap-2 px-4 py-2 bg-[#2B2D31] rounded-t-lg border-b border-[#1E1F22] text-xs">
+                  <div className="flex items-center gap-2 px-4 py-2 bg-[var(--tk-bg-panel)] rounded-t-lg border-b border-[var(--tk-bg-deep)] text-xs">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="#B5BAC1" className="shrink-0"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11Z"/></svg>
-                    <span className="text-[#949BA4]">Respondendo a</span>
-                    <span className="text-[#C4C9CE] font-medium">@{replyingToMessage.userName}</span>
-                    <span className="text-[#949BA4] truncate max-w-[200px]">{replyingToMessage.content ? replyingToMessage.content.slice(0, 60).replace(/\n/g, " ") : "(imagem)"}</span>
-                    <button type="button" onClick={() => setReplyingToMessage(null)} className="ml-auto text-[#B5BAC1] hover:text-white transition-colors" title="Cancelar resposta">
+                    <span className="text-[var(--tk-text-subtle)]">Respondendo a</span>
+                    <span className="text-[var(--tk-text-soft)] font-medium">@{replyingToMessage.userName}</span>
+                    <span className="text-[var(--tk-text-subtle)] truncate max-w-[200px]">{replyingToMessage.content ? replyingToMessage.content.slice(0, 60).replace(/\n/g, " ") : "(imagem)"}</span>
+                    <button type="button" onClick={() => setReplyingToMessage(null)} className="ml-auto text-[var(--tk-text-muted)] hover:text-white transition-colors" title="Cancelar resposta">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
                     </button>
                   </div>
                 )}
-                <div className={`flex items-end bg-[#383A40] ${replyingToMessage ? "rounded-b-lg" : "rounded-lg"}`}>
+                <div className={`flex bg-[var(--tk-bg-elev)] ${isMobile ? "flex-wrap items-center border border-[var(--tk-border)] px-1" : "items-end"} ${replyingToMessage ? "rounded-b-2xl" : isMobile ? "rounded-2xl" : "rounded-lg"}`}>
                   <button
                     type="button"
                     onClick={() => {
                       const fileInput = document.getElementById("server-file-input") as HTMLInputElement | null;
                       fileInput?.click();
                     }}
-                    className="flex items-center justify-center w-11 h-11 shrink-0 text-[#B5BAC1] hover:text-[#DBDEE1] transition-colors"
+                    className="flex items-center justify-center w-11 h-11 shrink-0 text-[var(--tk-text-muted)] hover:text-[var(--tk-text)] transition-colors"
                     title="Enviar arquivo"
                   >
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
                   </button>
                   <textarea
                     ref={serverTextareaRef}
-                    className="flex-1 bg-transparent py-2.5 px-1 text-sm min-h-[44px] max-h-[50vh] resize-y outline-none placeholder-[#6D6F78]"
+                    className={`flex-1 min-w-0 bg-transparent py-2.5 px-1 min-h-[44px] outline-none placeholder-[var(--tk-text-faint)] ${isMobile ? "text-base resize-none max-h-[35vh]" : "text-sm resize-y max-h-[50vh]"}`}
                     value={newMessage}
                     onChange={(event) => {
                       setNewMessage(event.target.value);
@@ -9231,21 +9736,49 @@ export function AppShell() {
                     }}
                     onPaste={onServerMessagePaste}
                     onKeyDown={(event) => {
-                      if (event.key === "Enter" && !event.shiftKey) {
+                      if (event.key === "Enter" && !event.shiftKey && !isMobile) {
                         event.preventDefault();
                         if (!busy) {
                           (event.currentTarget.form as HTMLFormElement | null)?.requestSubmit();
                         }
                       }
                     }}
-                    placeholder={`Conversar em #${selectedChannel?.name ? ` | ${selectedChannel.name}` : ""}`}
+                    placeholder={`Conversar em #${selectedChannel?.name ?? ""}`}
                     rows={1}
+                    enterKeyHint={isMobile ? "enter" : "send"}
                   />
-                  <div className="flex items-center gap-1 pr-2 shrink-0">
+                  {isMobile && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setShowMobileComposerTools((value) => !value)}
+                        aria-label={showMobileComposerTools ? "Esconder opções" : "Emojis e mais opções"}
+                        aria-expanded={showMobileComposerTools}
+                        className={`h-10 w-10 shrink-0 rounded-full flex items-center justify-center transition-colors ${showMobileComposerTools ? "text-white bg-[var(--tk-bg-active)]" : "text-[var(--tk-text-muted)]"}`}
+                      >
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <circle cx="12" cy="12" r="9" />
+                          <path d="M8.5 14.5a4.5 4.5 0 0 0 7 0" />
+                          <path d="M9 9.5h.01M15 9.5h.01" />
+                        </svg>
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={busy || !(newMessage.trim() || selectedFiles.length > 0)}
+                        aria-label="Enviar mensagem"
+                        className="h-10 w-10 shrink-0 rounded-full neon-active flex items-center justify-center disabled:opacity-40 disabled:shadow-none"
+                      >
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                          <path d="M3.4 20.4 21 12 3.4 3.6 3.4 10l12.6 2-12.6 2z" />
+                        </svg>
+                      </button>
+                    </>
+                  )}
+                  <div className={isMobile ? (showMobileComposerTools ? "order-first w-full flex items-center justify-around py-1 border-b border-[var(--tk-border)]" : "hidden") : "flex items-center gap-1 pr-2 shrink-0"}>
                     <button
                       type="button"
                       onClick={() => { setActiveCustomPreview((c) => { const n = c === "sticker" ? null : "sticker"; if (n === "sticker") setServerStickerPreviewPage(0); return n; }); setShowEmojiMartPicker(false); }}
-                      className={`w-8 h-8 flex items-center justify-center rounded hover:bg-[#4E5058] transition-colors ${activeCustomPreview === "sticker" ? "text-[#DBDEE1]" : "text-[#B5BAC1] hover:text-[#DBDEE1]"}`}
+                      className={`w-8 h-8 flex items-center justify-center rounded hover:bg-[var(--tk-border-strong)] transition-colors ${activeCustomPreview === "sticker" ? "text-[var(--tk-text)]" : "text-[var(--tk-text-muted)] hover:text-[var(--tk-text)]"}`}
                       title="Figurinhas do servidor"
                     >
                       <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M18.92 11.03C18.72 6.58 15.09 3 10.5 3C5.81 3 2 6.81 2 11.5C2 16.19 5.81 20 10.5 20C10.67 20 10.84 20 11 19.97V19.5C11 17.57 12.57 16 14.5 16H15.97L18.92 11.03ZM7 13C6.45 13 6 12.55 6 12C6 11.45 6.45 11 7 11C7.55 11 8 11.45 8 12C8 12.55 7.55 13 7 13ZM10.5 16C9.95 16 9.5 15.55 9.5 15C9.5 14.45 9.95 14 10.5 14C11.05 14 11.5 14.45 11.5 15C11.5 15.55 11.05 16 10.5 16ZM10.5 10C9.95 10 9.5 9.55 9.5 9C9.5 8.45 9.95 8 10.5 8C11.05 8 11.5 8.45 11.5 9C11.5 9.55 11.05 10 10.5 10ZM14 13C13.45 13 13 12.55 13 12C13 11.45 13.45 11 14 11C14.55 11 15 11.45 15 12C15 12.55 14.55 13 14 13Z"/><path d="M20.49 14.13L14.13 20.49C13.53 21.09 12.74 21.44 11.9 21.49C12.1 21.5 12.3 21.5 12.5 21.5C12.5 21.5 22 21.5 22 12.5C22 12.3 22 12.1 21.99 11.9C21.94 12.74 21.59 13.53 20.49 14.13Z" opacity="0.5"/></svg>
@@ -9253,7 +9786,7 @@ export function AppShell() {
                     <button
                       type="button"
                       onClick={() => { setActiveCustomPreview((c) => { const n = c === "emoji" ? null : "emoji"; if (n === "emoji") setServerEmojiPreviewPage(0); return n; }); setShowEmojiMartPicker(false); }}
-                      className={`w-8 h-8 flex items-center justify-center rounded hover:bg-[#4E5058] transition-colors ${activeCustomPreview === "emoji" ? "text-[#DBDEE1]" : "text-[#B5BAC1] hover:text-[#DBDEE1]"}`}
+                      className={`w-8 h-8 flex items-center justify-center rounded hover:bg-[var(--tk-border-strong)] transition-colors ${activeCustomPreview === "emoji" ? "text-[var(--tk-text)]" : "text-[var(--tk-text-muted)] hover:text-[var(--tk-text)]"}`}
                       title="Emojis do servidor"
                     >
                       <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM8.5 8C9.33 8 10 8.67 10 9.5C10 10.33 9.33 11 8.5 11C7.67 11 7 10.33 7 9.5C7 8.67 7.67 8 8.5 8ZM15.5 8C16.33 8 17 8.67 17 9.5C17 10.33 16.33 11 15.5 11C14.67 11 14 10.33 14 9.5C14 8.67 14.67 8 15.5 8ZM12 18C9.11 18 6.69 16.13 5.87 13.5H18.13C17.31 16.13 14.89 18 12 18Z"/></svg>
@@ -9261,7 +9794,7 @@ export function AppShell() {
                     <button
                       type="button"
                       onClick={() => { setShowEmojiMartPicker((c) => !c); setActiveCustomPreview(null); }}
-                      className={`w-8 h-8 flex items-center justify-center rounded hover:bg-[#4E5058] transition-colors ${showEmojiMartPicker ? "text-[#DBDEE1]" : "text-[#B5BAC1] hover:text-[#DBDEE1]"}`}
+                      className={`w-8 h-8 flex items-center justify-center rounded hover:bg-[var(--tk-border-strong)] transition-colors ${showEmojiMartPicker ? "text-[var(--tk-text)]" : "text-[var(--tk-text-muted)] hover:text-[var(--tk-text)]"}`}
                       title="Emoji padrão"
                     >
                       <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2ZM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8Zm3.5-9c.83 0 1.5-.67 1.5-1.5S16.33 8 15.5 8 14 8.67 14 9.5s.67 1.5 1.5 1.5Zm-7 0c.83 0 1.5-.67 1.5-1.5S9.33 8 8.5 8 7 8.67 7 9.5 7.67 11 8.5 11Zm3.5 6.5c2.33 0 4.31-1.46 5.11-3.5H6.89c.8 2.04 2.78 3.5 5.11 3.5Z"/></svg>
@@ -9269,7 +9802,7 @@ export function AppShell() {
                     <button
                       type="button"
                       onClick={() => toggleSpoilerWrap(newMessage, setNewMessage)}
-                      className="w-8 h-8 flex items-center justify-center rounded text-[#B5BAC1] hover:text-[#DBDEE1] hover:bg-[#4E5058] transition-colors"
+                      className="w-8 h-8 flex items-center justify-center rounded text-[var(--tk-text-muted)] hover:text-[var(--tk-text)] hover:bg-[var(--tk-border-strong)] transition-colors"
                       title="Marcar como spoiler"
                     >
                       <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5ZM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5Zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3Z"/></svg>
@@ -9277,7 +9810,7 @@ export function AppShell() {
                     <button
                       type="button"
                       onClick={() => toggleCodeBlockWrap(newMessage, setNewMessage)}
-                      className="w-8 h-8 flex items-center justify-center rounded text-[#B5BAC1] hover:text-[#DBDEE1] hover:bg-[#4E5058] transition-colors"
+                      className="w-8 h-8 flex items-center justify-center rounded text-[var(--tk-text-muted)] hover:text-[var(--tk-text)] hover:bg-[var(--tk-border-strong)] transition-colors"
                       title="Enviar como código"
                     >
                       <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M9.4 16.6 4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4Zm5.2 0L19.2 12l-4.6-4.6L16 6l6 6-6 6-1.4-1.4Z"/></svg>
@@ -9285,7 +9818,7 @@ export function AppShell() {
                     <button
                       type="button"
                       onClick={() => setShowPollCreator(true)}
-                      className={`w-8 h-8 flex items-center justify-center rounded hover:bg-[#4E5058] transition-colors ${showPollCreator ? "text-[#DBDEE1]" : "text-[#B5BAC1] hover:text-[#DBDEE1]"}`}
+                      className={`w-8 h-8 flex items-center justify-center rounded hover:bg-[var(--tk-border-strong)] transition-colors ${showPollCreator ? "text-[var(--tk-text)]" : "text-[var(--tk-text-muted)] hover:text-[var(--tk-text)]"}`}
                       title="Criar enquete"
                     >
                       <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2ZM9 17H7v-7h2v7Zm4 0h-2V7h2v10Zm4 0h-2v-4h2v4Z"/></svg>
@@ -9304,13 +9837,13 @@ export function AppShell() {
                   className="hidden"
                 />
                 {showPollCreator && (
-                  <div className="rounded-lg border border-[#1F2023] bg-[#2B2D31] p-4 space-y-3">
+                  <div className="rounded-lg border border-[var(--tk-line)] bg-[var(--tk-bg-panel)] p-4 space-y-3">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="#5865F2"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2ZM9 17H7v-7h2v7Zm4 0h-2V7h2v10Zm4 0h-2v-4h2v4Z"/></svg>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="#A855F7"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2ZM9 17H7v-7h2v7Zm4 0h-2V7h2v10Zm4 0h-2v-4h2v4Z"/></svg>
                         <span className="text-sm font-semibold text-white">Criar enquete</span>
                       </div>
-                      <button type="button" onClick={() => setShowPollCreator(false)} className="text-[#B5BAC1] hover:text-white transition-colors">
+                      <button type="button" onClick={() => setShowPollCreator(false)} className="text-[var(--tk-text-muted)] hover:text-white transition-colors">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
                       </button>
                     </div>
@@ -9319,46 +9852,46 @@ export function AppShell() {
                       value={pollQuestion}
                       onChange={(e) => setPollQuestion(e.target.value)}
                       placeholder="Pergunta da enquete"
-                      className="w-full rounded bg-[#1E1F22] border border-[#3F4147] px-3 py-2 text-sm text-white placeholder-[#6D6F78] outline-none focus:border-[#5865F2]"
+                      className="w-full rounded bg-[var(--tk-bg-deep)] border border-[var(--tk-border)] px-3 py-2 text-sm text-white placeholder-[var(--tk-text-faint)] outline-none focus:border-[var(--tk-accent)]"
                     />
                     <div className="space-y-1.5">
                       {pollOptions.map((opt, idx) => (
                         <div key={idx} className="flex items-center gap-2">
-                          <span className="text-xs text-[#949BA4] w-5 text-center shrink-0">{idx + 1}.</span>
+                          <span className="text-xs text-[var(--tk-text-subtle)] w-5 text-center shrink-0">{idx + 1}.</span>
                           <input
                             type="text"
                             value={opt}
                             onChange={(e) => { const next = [...pollOptions]; next[idx] = e.target.value; setPollOptions(next); }}
                             placeholder={`Opção ${idx + 1}`}
-                            className="flex-1 rounded bg-[#1E1F22] border border-[#3F4147] px-3 py-1.5 text-sm text-white placeholder-[#6D6F78] outline-none focus:border-[#5865F2]"
+                            className="flex-1 rounded bg-[var(--tk-bg-deep)] border border-[var(--tk-border)] px-3 py-1.5 text-sm text-white placeholder-[var(--tk-text-faint)] outline-none focus:border-[var(--tk-accent)]"
                           />
                           {pollOptions.length > 2 && (
-                            <button type="button" onClick={() => setPollOptions(pollOptions.filter((_, i) => i !== idx))} className="text-[#B5BAC1] hover:text-[#ED4245] transition-colors shrink-0">
+                            <button type="button" onClick={() => setPollOptions(pollOptions.filter((_, i) => i !== idx))} className="text-[var(--tk-text-muted)] hover:text-[#ED4245] transition-colors shrink-0">
                               <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
                             </button>
                           )}
                         </div>
                       ))}
                       {pollOptions.length < 10 && (
-                        <button type="button" onClick={() => setPollOptions([...pollOptions, ""])} className="text-xs text-[#5865F2] hover:text-[#7983F5] transition-colors flex items-center gap-1 mt-1">
+                        <button type="button" onClick={() => setPollOptions([...pollOptions, ""])} className="text-xs text-[var(--tk-accent)] hover:text-[var(--tk-accent-soft)] transition-colors flex items-center gap-1 mt-1">
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                           Adicionar opção
                         </button>
                       )}
                     </div>
-                    <label className="flex items-center gap-2 text-xs text-[#B5BAC1] cursor-pointer">
-                      <input type="checkbox" checked={pollMultiVote} onChange={(e) => setPollMultiVote(e.target.checked)} className="rounded accent-[#5865F2]" />
+                    <label className="flex items-center gap-2 text-xs text-[var(--tk-text-muted)] cursor-pointer">
+                      <input type="checkbox" checked={pollMultiVote} onChange={(e) => setPollMultiVote(e.target.checked)} className="rounded accent-[var(--tk-accent)]" />
                       Permitir múltiplos votos
                     </label>
                     <div className="flex items-center gap-2 justify-end">
-                      <button type="button" onClick={() => setShowPollCreator(false)} className="rounded px-3 py-1.5 text-xs text-[#B5BAC1] hover:text-white bg-[#383A40] hover:bg-[#43454D] transition-colors">
+                      <button type="button" onClick={() => setShowPollCreator(false)} className="rounded px-3 py-1.5 text-xs text-[var(--tk-text-muted)] hover:text-white bg-[var(--tk-bg-elev)] hover:bg-[var(--tk-bg-active)] transition-colors">
                         Cancelar
                       </button>
                       <button
                         type="button"
                         onClick={() => void sendPoll()}
                         disabled={busy || !pollQuestion.trim() || pollOptions.filter((o) => o.trim()).length < 2}
-                        className="rounded px-3 py-1.5 text-xs text-white bg-[#5865F2] hover:bg-[#4752C4] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="rounded px-3 py-1.5 text-xs text-white bg-[var(--tk-accent)] hover:bg-[var(--tk-accent-hover)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         Criar enquete
                       </button>
@@ -9366,33 +9899,33 @@ export function AppShell() {
                   </div>
                 )}
                 {serverUploadProgress !== null && (
-                  <div className="rounded border border-[#1F2023] bg-[#2B2D31]/70 p-2">
-                    <div className="mb-1 flex items-center justify-between text-[11px] text-[#B5BAC1]">
+                  <div className="rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)]/70 p-2">
+                    <div className="mb-1 flex items-center justify-between text-[11px] text-[var(--tk-text-muted)]">
                       <span>Enviando arquivos...</span>
                       <span>{serverUploadProgress}%</span>
                     </div>
-                    <div className="h-2 w-full overflow-hidden rounded bg-[#383A40]">
+                    <div className="h-2 w-full overflow-hidden rounded bg-[var(--tk-bg-elev)]">
                       <div
-                        className="h-full bg-[#5865F2] transition-all"
+                        className="h-full bg-[var(--tk-accent)] transition-all"
                         style={{ width: `${serverUploadProgress}%` }}
                       />
                     </div>
                   </div>
                 )}
                 {selectedFiles.length > 0 && (
-                  <div className="rounded border border-[#1F2023] bg-[#2B2D31] px-2 py-2 text-xs text-[#B5BAC1] space-y-1">
-                    <div className="text-[#949BA4]">Arquivos selecionados:</div>
+                  <div className="rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)] px-2 py-2 text-xs text-[var(--tk-text-muted)] space-y-1">
+                    <div className="text-[var(--tk-text-subtle)]">Arquivos selecionados:</div>
                     {selectedFiles.map((file) => {
                       const fileKey = getPendingFileKey(file);
                       const previewUrl = selectedFilePreviewByKey[fileKey];
 
                       return (
-                        <div key={fileKey} className="rounded border border-[#1F2023] bg-[#1E1F22] p-2 space-y-1">
+                        <div key={fileKey} className="rounded border border-[var(--tk-line)] bg-[var(--tk-bg-deep)] p-2 space-y-1">
                           {previewUrl && (
                             <img
                               src={previewUrl}
                               alt={file.name}
-                              className="max-h-28 rounded border border-[#1F2023]"
+                              className="max-h-28 rounded border border-[var(--tk-line)]"
                             />
                           )}
                           <div className="break-all">{file.name}</div>
@@ -9415,27 +9948,40 @@ export function AppShell() {
 
           {!showSettingsPanel && appMode === "server" && selectedChannel?.type === "voice" && !isVoiceConnected && (
             <div className="flex-1 flex flex-col gap-3">
-              <h3 className="font-medium">🔊 {selectedChannel.name}</h3>
+              <h3 className="font-medium inline-flex items-center gap-1"><VoiceChannelIcon />{selectedChannel.name}</h3>
               <button
                 onClick={enterVoice}
                 disabled={busy}
-                className="w-fit rounded bg-[#5865F2] hover:bg-[#5865F2] px-3 py-2 text-sm disabled:opacity-60"
+                className="w-fit rounded bg-[var(--tk-accent)] hover:bg-[var(--tk-accent)] px-3 py-2 text-sm disabled:opacity-60"
               >
                 Entrar na sala de voz (câmera/microfone/tela)
               </button>
             </div>
           )}
 
-          {!showSettingsPanel && appMode === "server" && isVoiceConnected && (
-            <div className="mt-3 border-t border-[#1F2023] pt-3 space-y-2">
-              <div className="flex items-center justify-between">
-                <p className="text-xs text-[#B5BAC1]">
-                  Conectado no canal de voz: <span className="font-medium">{activeVoiceChannelName ?? "canal de voz"}</span>
-                </p>
+          {!isMobile && !showSettingsPanel && appMode === "server" && isVoiceConnected && selectedChannel?.type === "voice" && (
+            <div className="px-4 pt-2 pb-1 space-y-2 shrink-0">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <span className="h-10 w-10 shrink-0 rounded-full neon-active flex items-center justify-center">
+                    <EqualizerGlyph />
+                  </span>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-3">
+                      <h3 className="neon-title text-xl font-extrabold truncate">{activeVoiceChannelName ?? "Canal de voz"}</h3>
+                      <span className="inline-flex items-center gap-1.5 text-sm font-extrabold neon-live">
+                        <span className="neon-signal"><i /><i /><i /><i /></span>AO VIVO
+                      </span>
+                    </div>
+                    <p className="text-xs text-[var(--tk-text-muted)] truncate">
+                      Conectado no canal de voz: <span className="font-medium">{activeVoiceChannelName ?? "canal de voz"}</span>
+                    </p>
+                  </div>
+                </div>
                 {activeVoiceChannelId && selectedChannelId !== activeVoiceChannelId && (
                   <button
                     onClick={() => setSelectedChannelId(activeVoiceChannelId)}
-                    className="rounded bg-[#383A40] hover:bg-[#404249] px-2 py-1 text-xs"
+                    className="rounded bg-[var(--tk-bg-elev)] hover:bg-[var(--tk-bg-active)] px-2 py-1 text-xs"
                   >
                     Abrir voz
                   </button>
@@ -9449,7 +9995,7 @@ export function AppShell() {
             <div
               className={`${
                 !showSettingsPanel && appMode === "server" && selectedChannel?.type === "voice"
-                  ? "rounded border border-[#1F2023] overflow-hidden h-full min-h-[420px] mt-3"
+                  ? "flex-1 min-h-0 min-w-0 overflow-hidden"
                   : "h-0 w-0 opacity-0 pointer-events-none"
               }`}
             >
@@ -9457,7 +10003,10 @@ export function AppShell() {
                 token={voiceToken!}
                 serverUrl={voiceServerUrl!}
                 serverId={activeVoiceServerId}
-                joinWithMicEnabled={joinWithMicEnabled}
+                joinWithMicEnabled={voiceEntryMicEnabled}
+                onMicrophoneStateChanged={(enabled) => {
+                  if (voiceTokenRef.current === voiceToken) voiceMicrophoneEnabledRef.current = enabled;
+                }}
                 joinWithCameraEnabled={joinWithCameraEnabled}
                 noiseSuppressionEnabled={noiseSuppressionEnabled}
                 noiseSuppressionMode={noiseSuppressionMode}
@@ -9490,34 +10039,43 @@ export function AppShell() {
           )}
         </main>
 
-        {(isMembersPanelOpen || appMode !== "server") && (
-        <aside className="w-60 shrink-0 bg-[#2B2D31] flex flex-col min-h-0">
+        {isMobile && isMembersPanelOpen && (
+          <button
+            type="button"
+            aria-label="Fechar painel"
+            onClick={() => setIsMembersPanelOpen(false)}
+            className="fixed inset-0 z-[65] bg-black/60"
+          />
+        )}
+        {(isMobile ? isMembersPanelOpen : isMembersPanelOpen || appMode !== "server") && (
+        <aside className={`neon-members flex flex-col min-h-0 ${isMobile ? "fixed inset-y-0 right-0 z-[70] w-[85vw] max-w-xs shadow-2xl px-1" : "w-64 shrink-0"}`}>
           {appMode === "server" ? (
             <>
-              <div className="px-4 pt-6 pb-3 flex items-center justify-between">
-                <div>
-                  <h3 className="text-[11px] font-bold uppercase tracking-wide text-[#949BA4]">Membros — {serverMembers.length}</h3>
-                </div>
+              <div className="mx-3 mt-4 mb-3 h-11 px-3 rounded-xl neon-card flex items-center justify-between">
+                <h3 className="flex items-center gap-2 text-sm font-semibold text-[var(--tk-text)]">
+                  <span className="text-[var(--tk-accent-soft)]"><EqualizerGlyph /></span>
+                  Membros ({serverMembers.length})
+                </h3>
                 <button
                   type="button"
                   onClick={() => setIsMembersPanelOpen(false)}
                   title="Ocultar painel de membros"
-                  className="h-7 w-7 rounded hover:bg-[#383A40] flex items-center justify-center text-[#949BA4] hover:text-white"
+                  className="h-7 w-7 rounded-lg hover:bg-[var(--tk-bg-active)] flex items-center justify-center text-[var(--tk-text-subtle)] hover:text-white"
                 >
                   »
                 </button>
               </div>
-              <div className="pt-3">
+              <div className="px-3">
                 <input
                   type="text"
                   value={sidebarMemberSearchTerm}
                   onChange={(event) => setSidebarMemberSearchTerm(event.target.value)}
                   placeholder="Buscar por nome ou userId"
-                  className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1.5 text-xs"
+                  className="neon-input w-full px-3 py-2 text-xs placeholder:text-[var(--tk-text-faint)]"
                 />
               </div>
               <div
-                className="no-scrollbar flex-1 overflow-y-auto pt-3"
+                className="no-scrollbar flex-1 overflow-y-auto pt-3 px-2"
                 onScroll={(event) => {
                   const target = event.currentTarget;
                   const nearBottom = target.scrollHeight - (target.scrollTop + target.clientHeight) < 80;
@@ -9526,11 +10084,50 @@ export function AppShell() {
                   }
                 }}
               >
-                <ul className="space-y-1 text-sm">
-                  {visibleSidebarMembers.map((member) => (
+                {(() => {
+                  const inVoiceUserIds = new Set(
+                    Object.values(voicePresenceByChannel).flatMap((list) => (list ?? []).map((entry) => entry.userId)),
+                  );
+                  const roleGroups: Array<{ role: string; label: string }> = [
+                    { role: "admin", label: "Administradores" },
+                    { role: "moderator", label: "Moderadores" },
+                    { role: "member", label: "Membros" },
+                  ];
+                  return (
+                <div className="space-y-3 text-sm">
+                  {roleGroups.map((roleGroup) => {
+                    const groupMembers = visibleSidebarMembers.filter((member) =>
+                      roleGroup.role === "member"
+                        ? member.role !== "admin" && member.role !== "moderator"
+                        : member.role === roleGroup.role,
+                    );
+                    if (!groupMembers.length) {
+                      return null;
+                    }
+                    return (
+                  <div key={roleGroup.role}>
+                    <div className="neon-section-label flex items-center gap-2 px-2 pb-1.5 text-[13px] font-semibold">
+                      <EqualizerGlyph />
+                      {roleGroup.label} ({groupMembers.length})
+                    </div>
+                <ul className="space-y-0.5">
+                  {groupMembers.map((member) => (
                     <li
                       key={member.userId}
-                      title={`Membro desde: ${formatMemberSince(member.createdAt)}`}
+                      title={
+                        member.userId.trim().toLowerCase() === userId.trim().toLowerCase() || inVoiceUserIds.has(member.userId)
+                          ? "Ativo agora"
+                          : formatLastSeen(member.lastSeenAt)
+                      }
+                      onDoubleClick={() => {
+                        if (busy || member.userId.trim().toLowerCase() === userId.trim().toLowerCase()) {
+                          return;
+                        }
+                        if (isMobile) {
+                          setIsMembersPanelOpen(false);
+                        }
+                        void openDirectConversation(member.userId);
+                      }}
                       onContextMenu={(event) => {
                         if (member.userId.trim().toLowerCase() === userId.trim().toLowerCase()) {
                           return;
@@ -9546,46 +10143,55 @@ export function AppShell() {
                           y: event.clientY,
                         });
                       }}
-                      className="rounded-[4px] px-2 py-1.5 text-[#949BA4] hover:bg-[#35373C] hover:text-[#DBDEE1] cursor-pointer"
+                      className="neon-item select-none rounded-lg px-2 py-1.5 text-[var(--tk-text-soft)] hover:bg-[var(--tk-bg-hover)] hover:text-white cursor-pointer"
                     >
-                      <div className="flex items-center gap-2 min-w-0">
+                      <div className="flex items-center gap-2.5 min-w-0">
                         {member.avatarUrl ? (
                           <img
                             src={member.avatarUrl}
                             alt={member.userName || "Usuário"}
-                            className="h-8 w-8 rounded-full object-cover"
+                            className="h-8 w-8 rounded-full object-cover shrink-0"
                           />
                         ) : (
-                          <div className="h-8 w-8 rounded-full bg-[#5865F2] flex items-center justify-center text-[10px] text-white font-semibold">
-                            {(member.userName || "U").slice(0, 1).toUpperCase()}
+                          <div className="h-8 w-8 shrink-0 rounded-full neon-active flex items-center justify-center text-[10px] font-semibold">
+                            {(member.userName || "U").slice(0, 2).toUpperCase()}
                           </div>
                         )}
-                        <span className="truncate">
+                        <span className="truncate flex-1">
                           {selectedServer && member.userId === selectedServer.ownerId && "👑 "}
-                          {member.userName || "Usuário"} ({member.role})
+                          {member.userName || "Usuário"}
                         </span>
+                        {inVoiceUserIds.has(member.userId) && (
+                          <span className="neon-online-dot shrink-0" title="Em um canal de voz" />
+                        )}
                       </div>
                     </li>
                   ))}
+                </ul>
+                  </div>
+                    );
+                  })}
                   {!serverMembers.length && (
-                    <li className="text-xs text-[#80848E]">Sem membros visíveis.</li>
+                    <p className="px-2 text-xs text-[var(--tk-text-faint)]">Sem membros visíveis.</p>
                   )}
                   {hasMoreVisibleSidebarMembers && (
-                    <li className="text-center text-xs text-[#80848E]">Role para carregar mais membros...</li>
+                    <p className="text-center text-xs text-[var(--tk-text-faint)]">Role para carregar mais membros...</p>
                   )}
-                </ul>
+                </div>
+                  );
+                })()}
               </div>
             </>
           ) : (
             <div className="flex-1 overflow-y-auto">
-              <div className="pb-3 border-b border-[#1F2023]">
+              <div className="pb-3 border-b border-[var(--tk-line)]">
                 <h3 className="font-medium">Conversa privada</h3>
-                <p className="text-xs text-[#949BA4]">{selectedDirectConversation ? "1 participante" : "Sem conversa selecionada"}</p>
+                <p className="text-xs text-[var(--tk-text-subtle)]">{selectedDirectConversation ? "1 participante" : "Sem conversa selecionada"}</p>
               </div>
               {selectedDirectConversation && (
                 <div className="pt-3">
                   <div
-                    className="group relative h-24 overflow-hidden rounded border border-[#1F2023] bg-[#2B2D31]/70"
+                    className="group relative h-24 overflow-hidden rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)]/70"
                     onMouseEnter={() => setIsDirectProfileCardHovered(true)}
                     onMouseLeave={() => setIsDirectProfileCardHovered(false)}
                   >
@@ -9601,10 +10207,10 @@ export function AppShell() {
                         <img
                           src={selectedDirectConversation.otherUserAvatarUrl}
                           alt={selectedDirectConversation.otherUserName}
-                          className="h-9 w-9 rounded-full object-cover border border-[#3F4147]"
+                          className="h-9 w-9 rounded-full object-cover border border-[var(--tk-border)]"
                         />
                       ) : (
-                        <div className="h-9 w-9 rounded-full border border-[#3F4147] bg-[#383A40] flex items-center justify-center text-[10px] text-[#B5BAC1]">
+                        <div className="h-9 w-9 rounded-full border border-[var(--tk-border)] bg-[var(--tk-bg-elev)] flex items-center justify-center text-[10px] text-[var(--tk-text-muted)]">
                           DM
                         </div>
                       )}
@@ -9614,7 +10220,7 @@ export function AppShell() {
                           style={selectedDirectConversation.otherUserDisplayNameStyle}
                           className="text-sm truncate"
                         />
-                        <p className="text-xs text-[#B5BAC1] truncate">{selectedDirectConversation.otherUserId}</p>
+                        <p className="text-xs text-[var(--tk-text-muted)] truncate">{selectedDirectConversation.otherUserId}</p>
                       </div>
                     </div>
                   </div>
@@ -9626,12 +10232,65 @@ export function AppShell() {
         )}
         </div>
 
-        {!isMembersPanelOpen && appMode === "server" && (
+        {isMobile && mobileView === "nav" && (
+          <nav className="fixed inset-x-0 bottom-0 z-40 h-16 flex items-stretch border-t border-[var(--tk-line)] bg-[var(--tk-bg-deepest)]/95 backdrop-blur pb-[env(safe-area-inset-bottom)]" aria-label="Navegação principal">
+            {([
+              { key: "server", label: "Servidores", active: appMode === "server" },
+              { key: "direct", label: "Mensagens", active: appMode === "direct" },
+              { key: "you", label: "Você", active: false },
+            ] as const).map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => {
+                  if (tab.key === "you") {
+                    setSettingsPanelMode("all");
+                    setShowSettingsPanel(true);
+                    setMobileView("content");
+                    return;
+                  }
+                  setShowSettingsPanel(false);
+                  setAppMode(tab.key);
+                }}
+                className={`relative flex-1 flex flex-col items-center justify-center gap-1 text-[11px] font-semibold transition-colors ${tab.active ? "text-white" : "text-[var(--tk-text-faint)]"}`}
+              >
+                {tab.key === "server" && (
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z" />
+                  </svg>
+                )}
+                {tab.key === "direct" && (
+                  <span className="relative">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z" />
+                    </svg>
+                    {directUnreadTotal > 0 && (
+                      <span className="absolute -right-2.5 -top-1.5 min-w-4 rounded-full bg-[#F23F42] px-1 text-[9px] leading-4 text-white text-center">
+                        {directUnreadTotal > 99 ? "99+" : directUnreadTotal}
+                      </span>
+                    )}
+                  </span>
+                )}
+                {tab.key === "you" && (
+                  userAvatarUrl ? (
+                    <img src={userAvatarUrl} alt="" className="h-6 w-6 rounded-full object-cover" />
+                  ) : (
+                    <span className="h-6 w-6 rounded-full neon-active flex items-center justify-center text-[9px] font-bold">{userName.slice(0, 2).toUpperCase()}</span>
+                  )
+                )}
+                {tab.label}
+                {tab.active && <span className="absolute top-0 h-0.5 w-10 rounded-full bg-[var(--tk-accent-soft)] shadow-[0_0_10px_var(--tk-accent-glow)]" />}
+              </button>
+            ))}
+          </nav>
+        )}
+
+        {!isMobile && !isMembersPanelOpen && appMode === "server" && (
           <button
             type="button"
             onClick={() => setIsMembersPanelOpen(true)}
             title="Mostrar painel de membros"
-            className="absolute right-0 top-1/2 -translate-y-1/2 z-20 flex h-10 w-6 items-center justify-center rounded-l bg-[#2B2D31] hover:bg-[#35373C] text-[#949BA4] hover:text-white"
+            className="absolute right-0 top-1/2 -translate-y-1/2 z-20 flex h-10 w-6 items-center justify-center rounded-l bg-[var(--tk-bg-panel)] hover:bg-[var(--tk-bg-hover)] text-[var(--tk-text-subtle)] hover:text-white"
           >
             «
           </button>
@@ -9639,7 +10298,7 @@ export function AppShell() {
 
         {serverContextMenu && contextMenuServer && (
           <div
-            className="fixed z-50 min-w-[188px] rounded-[4px] bg-[#111214] p-[6px] shadow-xl"
+            className="fixed z-50 min-w-[188px] rounded-[4px] bg-[var(--tk-bg-deepest)] p-[6px] shadow-xl"
             style={{ left: serverContextMenu.x, top: serverContextMenu.y }}
             onClick={(event) => event.stopPropagation()}
           >
@@ -9652,7 +10311,7 @@ export function AppShell() {
                 setShowSettingsPanel(true);
                 setServerContextMenu(null);
               }}
-              className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[#383A40]"
+              className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[var(--tk-bg-elev)]"
             >
               Ir para configurações do servidor
             </button>
@@ -9661,28 +10320,28 @@ export function AppShell() {
 
         {channelAreaContextMenu && canManageChannels && (
           <div
-            className="fixed z-50 min-w-52 rounded border border-[#1F2023] bg-[#2B2D31] p-1 shadow-lg"
+            className="fixed z-50 min-w-52 rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)] p-1 shadow-lg"
             style={{ left: channelAreaContextMenu.x, top: channelAreaContextMenu.y }}
             onClick={(event) => event.stopPropagation()}
           >
             <button
               type="button"
               onClick={() => openCreateItemModal("text")}
-              className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[#383A40]"
+              className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[var(--tk-bg-elev)]"
             >
               Criar canal de texto
             </button>
             <button
               type="button"
               onClick={() => openCreateItemModal("voice")}
-              className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[#383A40]"
+              className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[var(--tk-bg-elev)]"
             >
               Criar canal de voz
             </button>
             <button
               type="button"
               onClick={() => openCreateItemModal("category")}
-              className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[#383A40]"
+              className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[var(--tk-bg-elev)]"
             >
               Criar categoria
             </button>
@@ -9691,35 +10350,35 @@ export function AppShell() {
 
         {channelContextMenu && contextMenuChannel && canManageChannels && (
           <div
-            className="fixed z-50 min-w-52 rounded border border-[#1F2023] bg-[#2B2D31] p-1 shadow-lg"
+            className="fixed z-50 min-w-52 rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)] p-1 shadow-lg"
             style={{ left: channelContextMenu.x, top: channelContextMenu.y }}
             onClick={(event) => event.stopPropagation()}
           >
             <button
               type="button"
               onClick={() => openChannelActionModal("rename")}
-              className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[#383A40]"
+              className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[var(--tk-bg-elev)]"
             >
               Editar nome do canal
             </button>
             <button
               type="button"
               onClick={() => openChannelActionModal("move")}
-              className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[#383A40]"
+              className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[var(--tk-bg-elev)]"
             >
               Mover para outra categoria
             </button>
             <button
               type="button"
               onClick={() => openChannelActionModal("permissions")}
-              className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[#383A40]"
+              className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[var(--tk-bg-elev)]"
             >
               Permissões do canal
             </button>
             <button
               type="button"
               onClick={() => void deleteChannel()}
-              className="w-full text-left rounded px-2 py-1 text-sm text-[#FA777C] hover:bg-[#383A40]"
+              className="w-full text-left rounded px-2 py-1 text-sm text-[#FA777C] hover:bg-[var(--tk-bg-elev)]"
             >
               Excluir canal
             </button>
@@ -9728,21 +10387,27 @@ export function AppShell() {
 
         {categoryContextMenu && contextMenuCategory && canManageChannels && (
           <div
-            className="fixed z-50 min-w-52 rounded border border-[#1F2023] bg-[#2B2D31] p-1 shadow-lg"
+            className="fixed z-50 min-w-52 rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)] p-1 shadow-lg"
             style={{ left: categoryContextMenu.x, top: categoryContextMenu.y }}
             onClick={(event) => event.stopPropagation()}
           >
             <button
               type="button"
               onClick={openCategoryRenameModal}
-              className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[#383A40]"
+              className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[var(--tk-bg-elev)]"
             >
               Editar nome da categoria
             </button>
+            <button type="button" onClick={() => void moveCategory("up")}
+              disabled={busy || categories[0]?.id === contextMenuCategory.id}
+              className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[var(--tk-bg-elev)] disabled:opacity-40">Mover categoria para cima</button>
+            <button type="button" onClick={() => void moveCategory("down")}
+              disabled={busy || categories[categories.length - 1]?.id === contextMenuCategory.id}
+              className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[var(--tk-bg-elev)] disabled:opacity-40">Mover categoria para baixo</button>
             <button
               type="button"
               onClick={() => void deleteCategory()}
-              className="w-full text-left rounded px-2 py-1 text-sm text-[#FA777C] hover:bg-[#383A40]"
+              className="w-full text-left rounded px-2 py-1 text-sm text-[#FA777C] hover:bg-[var(--tk-bg-elev)]"
             >
               Excluir categoria
             </button>
@@ -9751,7 +10416,7 @@ export function AppShell() {
 
         {directConversationContextMenu && contextMenuDirectConversation && (
           <div
-            className="fixed z-50 min-w-56 rounded border border-[#1F2023] bg-[#2B2D31] p-1 shadow-lg"
+            className="fixed z-50 min-w-56 rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)] p-1 shadow-lg"
             style={{ left: directConversationContextMenu.x, top: directConversationContextMenu.y }}
             onClick={(event) => event.stopPropagation()}
           >
@@ -9761,7 +10426,7 @@ export function AppShell() {
                 void clearDirectConversationMessages(contextMenuDirectConversation.id);
                 setDirectConversationContextMenu(null);
               }}
-              className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[#383A40]"
+              className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[var(--tk-bg-elev)]"
             >
               Excluir apenas as conversas
             </button>
@@ -9772,7 +10437,7 @@ export function AppShell() {
                   void removeDirectFriend(contextMenuDirectConversation.otherUserId);
                   setDirectConversationContextMenu(null);
                 }}
-                className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[#383A40]"
+                className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[var(--tk-bg-elev)]"
               >
                 Remover amizade
               </button>
@@ -9783,7 +10448,7 @@ export function AppShell() {
                   void sendDirectFriendRequest(contextMenuDirectConversation.otherUserId);
                   setDirectConversationContextMenu(null);
                 }}
-                className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[#383A40]"
+                className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[var(--tk-bg-elev)]"
               >
                 Adicionar como amigo
               </button>
@@ -9794,7 +10459,7 @@ export function AppShell() {
                 void deleteDirectConversation(contextMenuDirectConversation.id);
                 setDirectConversationContextMenu(null);
               }}
-              className="w-full text-left rounded px-2 py-1 text-sm text-[#FA777C] hover:bg-[#383A40]"
+              className="w-full text-left rounded px-2 py-1 text-sm text-[#FA777C] hover:bg-[var(--tk-bg-elev)]"
             >
               Excluir DM
             </button>
@@ -9803,7 +10468,7 @@ export function AppShell() {
 
         {memberContextMenu && (
           <div
-            className="fixed z-50 min-w-52 rounded border border-[#1F2023] bg-[#2B2D31] p-1 shadow-lg"
+            className="fixed z-50 min-w-52 rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)] p-1 shadow-lg"
             style={{ left: memberContextMenu.x, top: memberContextMenu.y }}
             onClick={(event) => event.stopPropagation()}
           >
@@ -9813,7 +10478,7 @@ export function AppShell() {
                 void openDirectConversation(memberContextMenu.targetUserId);
                 setMemberContextMenu(null);
               }}
-              className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[#383A40]"
+              className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[var(--tk-bg-elev)]"
             >
               Mensagem direta
             </button>
@@ -9823,7 +10488,7 @@ export function AppShell() {
                 onClick={() => {
                   openMemberRoleModal();
                 }}
-                className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[#383A40]"
+                className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[var(--tk-bg-elev)]"
               >
                 Gerenciar cargo e permissões
               </button>
@@ -9836,7 +10501,7 @@ export function AppShell() {
                   targetUserId: memberContextMenu.targetUserId,
                   targetUserName: memberContextMenu.targetUserName,
                 })}
-                className="w-full text-left rounded px-2 py-1 text-sm text-[#FA777C] hover:bg-[#383A40]"
+                className="w-full text-left rounded px-2 py-1 text-sm text-[#FA777C] hover:bg-[var(--tk-bg-elev)]"
               >
                 Banir membro
               </button>
@@ -9849,7 +10514,7 @@ export function AppShell() {
                   targetUserId: memberContextMenu.targetUserId,
                   targetUserName: memberContextMenu.targetUserName,
                 })}
-                className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[#383A40]"
+                className="w-full text-left rounded px-2 py-1 text-sm hover:bg-[var(--tk-bg-elev)]"
               >
                 Castigar (tempo de voz)
               </button>
@@ -9861,7 +10526,7 @@ export function AppShell() {
           <div
             data-channel-message-user-card="true"
             ref={channelMessageUserCardRef}
-            className="fixed z-50 w-80 overflow-hidden rounded border border-[#1F2023] bg-[#2B2D31] shadow-lg"
+            className="fixed z-50 w-80 overflow-hidden rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)] shadow-lg"
             style={{ left: channelMessageUserCard.x, top: channelMessageUserCard.y }}
             onClick={(event) => event.stopPropagation()}
           >
@@ -9873,7 +10538,7 @@ export function AppShell() {
                   className="absolute inset-0 h-full w-full object-cover"
                 />
               ) : (
-                <div className="absolute inset-0 bg-[#383A40]" />
+                <div className="absolute inset-0 bg-[var(--tk-bg-elev)]" />
               )}
               <div className="absolute inset-0 bg-black/35" />
             </div>
@@ -9887,7 +10552,7 @@ export function AppShell() {
                     className="h-12 w-12 rounded-full border-2 border-zinc-900 object-cover"
                   />
                 ) : (
-                  <div className="h-12 w-12 rounded-full border-2 border-zinc-900 bg-[#404249] flex items-center justify-center text-[10px] text-[#DBDEE1]">
+                  <div className="h-12 w-12 rounded-full border-2 border-zinc-900 bg-[var(--tk-bg-active)] flex items-center justify-center text-[10px] text-[var(--tk-text)]">
                     USER
                   </div>
                 )}
@@ -9897,7 +10562,7 @@ export function AppShell() {
                     style={channelMessageUserCard.targetDisplayNameStyle}
                     className="text-sm truncate"
                   />
-                  <p className="text-xs text-[#949BA4] truncate">{channelMessageUserCard.targetUserId}</p>
+                  <p className="text-xs text-[var(--tk-text-subtle)] truncate">{channelMessageUserCard.targetUserId}</p>
                 </div>
               </div>
 
@@ -9906,7 +10571,7 @@ export function AppShell() {
                   <button
                     type="button"
                     disabled
-                    className="w-full rounded border border-[#3F4147] bg-[#383A40] px-2 py-1.5 text-xs text-[#80848E]"
+                    className="w-full rounded border border-[var(--tk-border)] bg-[var(--tk-bg-elev)] px-2 py-1.5 text-xs text-[var(--tk-text-faint)]"
                   >
                     Este é você
                   </button>
@@ -9917,7 +10582,7 @@ export function AppShell() {
                       void openFriendConversation(channelMessageUserCard.targetUserId);
                       setChannelMessageUserCard(null);
                     }}
-                    className="w-full rounded bg-[#5865F2] hover:bg-[#5865F2] px-2 py-1.5 text-xs"
+                    className="w-full rounded bg-[var(--tk-accent)] hover:bg-[var(--tk-accent)] px-2 py-1.5 text-xs"
                   >
                     Ir para DM
                   </button>
@@ -9928,7 +10593,7 @@ export function AppShell() {
                       void sendDirectFriendRequest(channelMessageUserCard.targetUserId);
                       setChannelMessageUserCard(null);
                     }}
-                    className="w-full rounded bg-[#404249] hover:bg-[#404249] px-2 py-1.5 text-xs"
+                    className="w-full rounded bg-[var(--tk-bg-active)] hover:bg-[var(--tk-bg-active)] px-2 py-1.5 text-xs"
                   >
                     Enviar pedido de amizade
                   </button>
@@ -9940,7 +10605,7 @@ export function AppShell() {
 
         {bannedUserContextMenu && canManageBansForSelectedServer && (
           <div
-            className="fixed z-50 min-w-52 rounded border border-[#1F2023] bg-[#2B2D31] p-1 shadow-lg"
+            className="fixed z-50 min-w-52 rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)] p-1 shadow-lg"
             style={{ left: bannedUserContextMenu.x, top: bannedUserContextMenu.y }}
             onClick={(event) => event.stopPropagation()}
           >
@@ -9948,7 +10613,7 @@ export function AppShell() {
               type="button"
               onClick={() => void unbanServerUser(bannedUserContextMenu.banId, bannedUserContextMenu.userName)}
               disabled={busy}
-              className="w-full text-left rounded px-2 py-1 text-sm text-[#23A559] hover:bg-[#383A40] disabled:opacity-60"
+              className="w-full text-left rounded px-2 py-1 text-sm text-[var(--tk-green)] hover:bg-[var(--tk-bg-elev)] disabled:opacity-60"
             >
               Remover banimento
             </button>
@@ -9957,28 +10622,28 @@ export function AppShell() {
 
         {showDirectFriendsModal && (
           <div className="fixed inset-0 z-[73] bg-black/70 flex items-center justify-center p-4">
-            <div className="w-full max-w-xl overflow-hidden rounded-xl border border-[#3F4147] bg-[#2B2D31] shadow-2xl">
-              <div className="px-4 py-3 border-b border-[#3F4147] bg-[#1E1F22] flex items-center justify-between gap-2">
+            <div className="w-full max-w-xl overflow-hidden rounded-xl border border-[var(--tk-border)] bg-[var(--tk-bg-panel)] shadow-2xl">
+              <div className="px-4 py-3 border-b border-[var(--tk-border)] bg-[var(--tk-bg-deep)] flex items-center justify-between gap-2">
                 <div>
                   <h3 className="text-base font-semibold">Amigos</h3>
-                  <p className="text-xs text-[#949BA4]">Lista de amigos com pesquisa e rolagem</p>
+                  <p className="text-xs text-[var(--tk-text-subtle)]">Lista de amigos com pesquisa e rolagem</p>
                 </div>
                 <button
                   type="button"
                   onClick={() => setShowDirectFriendsModal(false)}
-                  className="rounded bg-[#383A40] hover:bg-[#404249] px-2 py-1 text-xs"
+                  className="rounded bg-[var(--tk-bg-elev)] hover:bg-[var(--tk-bg-active)] px-2 py-1 text-xs"
                 >
                   Fechar
                 </button>
               </div>
 
-              <div className="px-4 py-3 border-b border-[#1F2023]">
+              <div className="px-4 py-3 border-b border-[var(--tk-line)]">
                 <input
                   type="text"
                   value={directFriendSearchTerm}
                   onChange={(event) => setDirectFriendSearchTerm(event.target.value)}
                   placeholder="Pesquisar por nome ou userId"
-                  className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-1.5 text-sm"
+                  className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-1.5 text-sm"
                 />
               </div>
 
@@ -9993,11 +10658,11 @@ export function AppShell() {
                 }}
               >
                 {visibleDirectFriends.length === 0 && (
-                  <p className="text-sm text-[#80848E]">Nenhum amigo encontrado.</p>
+                  <p className="text-sm text-[var(--tk-text-faint)]">Nenhum amigo encontrado.</p>
                 )}
 
                 {visibleDirectFriends.map((friend) => (
-                  <div key={friend.userId} className="rounded border border-[#1F2023] bg-[#1E1F22] px-2 py-2">
+                  <div key={friend.userId} className="rounded border border-[var(--tk-line)] bg-[var(--tk-bg-deep)] px-2 py-2">
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
@@ -10011,23 +10676,23 @@ export function AppShell() {
                           <img
                             src={friend.avatarUrl}
                             alt={friend.userName}
-                            className="h-8 w-8 rounded-full object-cover border border-[#3F4147]"
+                            className="h-8 w-8 rounded-full object-cover border border-[var(--tk-border)]"
                           />
                         ) : (
-                          <div className="h-8 w-8 rounded-full border border-[#3F4147] bg-[#383A40] flex items-center justify-center text-[10px] text-[#B5BAC1]">
+                          <div className="h-8 w-8 rounded-full border border-[var(--tk-border)] bg-[var(--tk-bg-elev)] flex items-center justify-center text-[10px] text-[var(--tk-text-muted)]">
                             AM
                           </div>
                         )}
                         <div className="min-w-0">
                           <p className="text-sm truncate">{friend.userName}</p>
-                          <p className="text-[11px] text-[#949BA4] truncate">{friend.userId}</p>
+                          <p className="text-[11px] text-[var(--tk-text-subtle)] truncate">{friend.userId}</p>
                         </div>
                       </button>
                       <button
                         type="button"
                         onClick={() => void removeDirectFriend(friend.userId)}
                         disabled={busy}
-                        className="rounded bg-[#383A40] hover:bg-[#404249] border border-[#3F4147] px-2 py-1 text-xs disabled:opacity-60"
+                        className="rounded bg-[var(--tk-bg-elev)] hover:bg-[var(--tk-bg-active)] border border-[var(--tk-border)] px-2 py-1 text-xs disabled:opacity-60"
                       >
                         Remover
                       </button>
@@ -10036,7 +10701,7 @@ export function AppShell() {
                 ))}
 
                 {hasMoreVisibleDirectFriends && (
-                  <p className="text-xs text-[#80848E] text-center py-1">Role para carregar mais amigos...</p>
+                  <p className="text-xs text-[var(--tk-text-faint)] text-center py-1">Role para carregar mais amigos...</p>
                 )}
               </div>
             </div>
@@ -10045,19 +10710,19 @@ export function AppShell() {
 
         {virusTotalDownloadPrompt && (
           <div className="fixed inset-0 z-[72] bg-black/70 flex items-center justify-center p-4">
-            <div className="w-full max-w-md overflow-hidden rounded-xl border border-[#3F4147] bg-[#2B2D31] shadow-2xl">
-              <div className="px-4 py-3 border-b border-[#3F4147] bg-[#1E1F22]">
+            <div className="w-full max-w-md overflow-hidden rounded-xl border border-[var(--tk-border)] bg-[var(--tk-bg-panel)] shadow-2xl">
+              <div className="px-4 py-3 border-b border-[var(--tk-border)] bg-[var(--tk-bg-deep)]">
                 <h3 className="text-base font-semibold">Análise de segurança (VirusTotal)</h3>
               </div>
 
               <div className="px-4 py-4 space-y-3">
-                <div className="rounded border border-[#3F4147] bg-[#1E1F22] px-3 py-2">
-                  <p className="text-xs text-[#949BA4]">Arquivo</p>
-                  <p className="text-sm break-all text-[#F2F3F5]">{virusTotalDownloadPrompt.name}</p>
+                <div className="rounded border border-[var(--tk-border)] bg-[var(--tk-bg-deep)] px-3 py-2">
+                  <p className="text-xs text-[var(--tk-text-subtle)]">Arquivo</p>
+                  <p className="text-sm break-all text-[var(--tk-text-strong)]">{virusTotalDownloadPrompt.name}</p>
                 </div>
 
                 {virusTotalDownloadPrompt.status === "loading" && (
-                  <p className="text-sm text-[#DBDEE1]">Consultando relatório do VirusTotal...</p>
+                  <p className="text-sm text-[var(--tk-text)]">Consultando relatório do VirusTotal...</p>
                 )}
 
                 {virusTotalDownloadPrompt.status === "error" && (
@@ -10072,7 +10737,7 @@ export function AppShell() {
                       virusTotalDownloadPrompt.verdict === "unsafe"
                         ? "text-[#FA777C]"
                         : virusTotalDownloadPrompt.verdict === "clean"
-                          ? "text-[#23A559]"
+                          ? "text-[var(--tk-green)]"
                           : "text-amber-300"
                     }`}>
                       {virusTotalDownloadPrompt.verdict === "unsafe"
@@ -10083,7 +10748,7 @@ export function AppShell() {
                     </p>
 
                     {!!virusTotalDownloadPrompt.stats && (
-                      <div className="rounded border border-[#3F4147] bg-[#1E1F22] px-3 py-2 text-xs text-[#B5BAC1] grid grid-cols-2 gap-2">
+                      <div className="rounded border border-[var(--tk-border)] bg-[var(--tk-bg-deep)] px-3 py-2 text-xs text-[var(--tk-text-muted)] grid grid-cols-2 gap-2">
                         <span>Malicioso: {virusTotalDownloadPrompt.stats.malicious}</span>
                         <span>Suspeito: {virusTotalDownloadPrompt.stats.suspicious}</span>
                         <span>Inofensivo: {virusTotalDownloadPrompt.stats.harmless}</span>
@@ -10094,11 +10759,11 @@ export function AppShell() {
                 )}
               </div>
 
-              <div className="flex items-center justify-end gap-2 border-t border-[#3F4147] bg-[#1E1F22] px-4 py-3">
+              <div className="flex items-center justify-end gap-2 border-t border-[var(--tk-border)] bg-[var(--tk-bg-deep)] px-4 py-3">
                 <button
                   type="button"
                   onClick={() => setVirusTotalDownloadPrompt(null)}
-                  className="rounded bg-[#404249] hover:bg-[#404249] px-3 py-1.5 text-sm"
+                  className="rounded bg-[var(--tk-bg-active)] hover:bg-[var(--tk-bg-active)] px-3 py-1.5 text-sm"
                 >
                   Fechar
                 </button>
@@ -10118,7 +10783,7 @@ export function AppShell() {
                     startFileDownload(virusTotalDownloadPrompt.url, virusTotalDownloadPrompt.name);
                     setVirusTotalDownloadPrompt(null);
                   }}
-                  className="rounded bg-[#5865F2] hover:bg-[#5865F2] px-3 py-1.5 text-sm text-white disabled:opacity-60"
+                  className="rounded bg-[var(--tk-accent)] hover:bg-[var(--tk-accent)] px-3 py-1.5 text-sm text-white disabled:opacity-60"
                 >
                   {virusTotalDownloadPrompt.verdict === "unsafe" ? "Baixar mesmo assim" : "Continuar download"}
                 </button>
@@ -10129,29 +10794,29 @@ export function AppShell() {
 
         {dangerousDownloadPrompt && (
           <div className="fixed inset-0 z-[70] bg-black/70 flex items-center justify-center p-4">
-            <div className="w-full max-w-md overflow-hidden rounded-xl border border-[#3F4147] bg-[#2B2D31] shadow-2xl">
-              <div className="bg-gradient-to-r from-amber-600/20 via-red-600/20 to-amber-600/20 px-4 py-3 border-b border-[#3F4147]">
+            <div className="w-full max-w-md overflow-hidden rounded-xl border border-[var(--tk-border)] bg-[var(--tk-bg-panel)] shadow-2xl">
+              <div className="bg-gradient-to-r from-amber-600/20 via-red-600/20 to-amber-600/20 px-4 py-3 border-b border-[var(--tk-border)]">
                 <h3 className="text-base font-semibold text-amber-200">Download potencialmente perigoso</h3>
               </div>
 
               <div className="px-4 py-4 space-y-3">
-                <p className="text-sm text-[#DBDEE1]">
+                <p className="text-sm text-[var(--tk-text)]">
                   Este arquivo pode ser executável e potencialmente perigoso.
                 </p>
-                <div className="rounded border border-[#3F4147] bg-[#1E1F22] px-3 py-2">
-                  <p className="text-xs text-[#949BA4]">Arquivo</p>
-                  <p className="text-sm break-all text-[#F2F3F5]">{dangerousDownloadPrompt.name}</p>
+                <div className="rounded border border-[var(--tk-border)] bg-[var(--tk-bg-deep)] px-3 py-2">
+                  <p className="text-xs text-[var(--tk-text-subtle)]">Arquivo</p>
+                  <p className="text-sm break-all text-[var(--tk-text-strong)]">{dangerousDownloadPrompt.name}</p>
                 </div>
-                <p className="text-xs text-[#949BA4]">
+                <p className="text-xs text-[var(--tk-text-subtle)]">
                   Baixe apenas se você confiar na origem.
                 </p>
               </div>
 
-              <div className="flex items-center justify-end gap-2 border-t border-[#3F4147] bg-[#1E1F22] px-4 py-3">
+              <div className="flex items-center justify-end gap-2 border-t border-[var(--tk-border)] bg-[var(--tk-bg-deep)] px-4 py-3">
                 <button
                   type="button"
                   onClick={() => setDangerousDownloadPrompt(null)}
-                  className="rounded bg-[#404249] hover:bg-[#404249] px-3 py-1.5 text-sm"
+                  className="rounded bg-[var(--tk-bg-active)] hover:bg-[var(--tk-bg-active)] px-3 py-1.5 text-sm"
                 >
                   Fechar
                 </button>
@@ -10161,7 +10826,7 @@ export function AppShell() {
                     startFileDownload(dangerousDownloadPrompt.url, dangerousDownloadPrompt.name);
                     setDangerousDownloadPrompt(null);
                   }}
-                  className="rounded bg-[#5865F2] hover:bg-[#5865F2] px-3 py-1.5 text-sm text-white"
+                  className="rounded bg-[var(--tk-accent)] hover:bg-[var(--tk-accent)] px-3 py-1.5 text-sm text-white"
                 >
                   Continuar download
                 </button>
@@ -10172,7 +10837,7 @@ export function AppShell() {
 
         {showCategoryRenameModal && renameModalCategory && (
           <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
-            <div className="w-full max-w-md rounded-lg border border-[#1F2023] bg-[#2B2D31] p-4 space-y-3">
+            <div className="w-full max-w-md rounded-lg border border-[var(--tk-line)] bg-[var(--tk-bg-panel)] p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="font-medium">Editar nome da categoria</h3>
                 <button
@@ -10184,16 +10849,16 @@ export function AppShell() {
                     setShowCategoryRenameModal(false);
                     setCategoryRenameId(null);
                   }}
-                  className="rounded bg-[#383A40] hover:bg-[#404249] px-2 py-1 text-xs"
+                  className="rounded bg-[var(--tk-bg-elev)] hover:bg-[var(--tk-bg-active)] px-2 py-1 text-xs"
                 >
                   Fechar
                 </button>
               </div>
 
               <form onSubmit={submitCategoryRename} className="space-y-2">
-                <label className="text-xs text-[#949BA4]">Novo nome</label>
+                <label className="text-xs text-[var(--tk-text-subtle)]">Novo nome</label>
                 <input
-                  className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-2 text-sm"
+                  className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-2 text-sm"
                   value={categoryRenameName}
                   onChange={(event) => setCategoryRenameName(event.target.value)}
                   placeholder="Nome da categoria"
@@ -10201,7 +10866,7 @@ export function AppShell() {
                 <button
                   type="submit"
                   disabled={busy || !categoryRenameName.trim()}
-                  className="w-full rounded bg-[#5865F2] hover:bg-[#5865F2] px-3 py-2 text-sm disabled:opacity-60"
+                  className="w-full rounded bg-[var(--tk-accent)] hover:bg-[var(--tk-accent)] px-3 py-2 text-sm disabled:opacity-60"
                 >
                   Salvar
                 </button>
@@ -10212,7 +10877,7 @@ export function AppShell() {
 
         {showChannelActionModal && actionModalChannel && (
           <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
-            <div className="w-full max-w-md rounded-lg border border-[#1F2023] bg-[#2B2D31] p-4 space-y-3">
+            <div className="w-full max-w-md rounded-lg border border-[var(--tk-line)] bg-[var(--tk-bg-panel)] p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="font-medium">
                   {channelActionMode === "rename"
@@ -10230,7 +10895,7 @@ export function AppShell() {
                     setShowChannelActionModal(false);
                     setChannelActionChannelId(null);
                   }}
-                  className="rounded bg-[#383A40] hover:bg-[#404249] px-2 py-1 text-xs"
+                  className="rounded bg-[var(--tk-bg-elev)] hover:bg-[var(--tk-bg-active)] px-2 py-1 text-xs"
                 >
                   Fechar
                 </button>
@@ -10239,9 +10904,9 @@ export function AppShell() {
               <form onSubmit={submitChannelAction} className="space-y-2">
                 {channelActionMode === "rename" ? (
                   <>
-                    <label className="text-xs text-[#949BA4]">Novo nome</label>
+                    <label className="text-xs text-[var(--tk-text-subtle)]">Novo nome</label>
                     <input
-                      className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-2 text-sm"
+                      className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-2 text-sm"
                       value={channelActionName}
                       onChange={(event) => setChannelActionName(event.target.value)}
                       placeholder="Nome do canal"
@@ -10249,11 +10914,11 @@ export function AppShell() {
                   </>
                 ) : channelActionMode === "move" ? (
                   <>
-                    <label className="text-xs text-[#949BA4]">Categoria de destino</label>
+                    <label className="text-xs text-[var(--tk-text-subtle)]">Categoria de destino</label>
                     <select
                       value={channelActionCategoryId}
                       onChange={(event) => setChannelActionCategoryId(event.target.value)}
-                      className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-2 text-sm"
+                      className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-2 text-sm"
                     >
                       <option value="">Sem categoria</option>
                       {categories.map((category) => (
@@ -10264,8 +10929,8 @@ export function AppShell() {
                     </select>
                   </>
                 ) : (
-                  <div className="space-y-2 rounded border border-[#1F2023] bg-[#2B2D31] px-2 py-2 text-xs">
-                    <p className="text-[#B5BAC1]">Defina permissões por cargo (admin sempre mantém acesso total).</p>
+                  <div className="space-y-2 rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)] px-2 py-2 text-xs">
+                    <p className="text-[var(--tk-text-muted)]">Defina permissões por cargo (admin sempre mantém acesso total).</p>
                     <label className="flex items-center justify-between gap-2">
                       <span>Membros podem ver canal no servidor</span>
                       <input
@@ -10368,7 +11033,7 @@ export function AppShell() {
                 <button
                   type="submit"
                   disabled={busy || (channelActionMode === "rename" && !channelActionName.trim())}
-                  className="w-full rounded bg-[#5865F2] hover:bg-[#5865F2] px-3 py-2 text-sm disabled:opacity-60"
+                  className="w-full rounded bg-[var(--tk-accent)] hover:bg-[var(--tk-accent)] px-3 py-2 text-sm disabled:opacity-60"
                 >
                   Salvar
                 </button>
@@ -10379,7 +11044,7 @@ export function AppShell() {
 
         {showCreateItemModal && (
           <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
-            <div className="w-full max-w-md rounded-lg border border-[#1F2023] bg-[#2B2D31] p-4 space-y-3">
+            <div className="w-full max-w-md rounded-lg border border-[var(--tk-line)] bg-[var(--tk-bg-panel)] p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="font-medium">
                   {createItemKind === "category"
@@ -10396,16 +11061,16 @@ export function AppShell() {
                     }
                     setShowCreateItemModal(false);
                   }}
-                  className="rounded bg-[#383A40] hover:bg-[#404249] px-2 py-1 text-xs"
+                  className="rounded bg-[var(--tk-bg-elev)] hover:bg-[var(--tk-bg-active)] px-2 py-1 text-xs"
                 >
                   Fechar
                 </button>
               </div>
 
               <form onSubmit={createItemFromModal} className="space-y-2">
-                <label className="text-xs text-[#949BA4]">Nome</label>
+                <label className="text-xs text-[var(--tk-text-subtle)]">Nome</label>
                 <input
-                  className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-2 text-sm"
+                  className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-2 text-sm"
                   value={createItemName}
                   onChange={(event) => setCreateItemName(event.target.value)}
                   placeholder={createItemKind === "category" ? "Nome da categoria" : "Nome do canal"}
@@ -10413,11 +11078,11 @@ export function AppShell() {
 
                 {createItemKind !== "category" && (
                   <>
-                    <label className="text-xs text-[#949BA4]">Categoria (opcional)</label>
+                    <label className="text-xs text-[var(--tk-text-subtle)]">Categoria (opcional)</label>
                     <select
                       value={createItemCategoryId}
                       onChange={(event) => setCreateItemCategoryId(event.target.value)}
-                      className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-2 text-sm"
+                      className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-2 text-sm"
                     >
                       <option value="">Sem categoria</option>
                       {categories.map((category) => (
@@ -10432,7 +11097,7 @@ export function AppShell() {
                 <button
                   type="submit"
                   disabled={busy || !createItemName.trim()}
-                  className="w-full rounded bg-[#5865F2] hover:bg-[#5865F2] px-3 py-2 text-sm disabled:opacity-60"
+                  className="w-full rounded bg-[var(--tk-accent)] hover:bg-[var(--tk-accent)] px-3 py-2 text-sm disabled:opacity-60"
                 >
                   Criar
                 </button>
@@ -10441,9 +11106,113 @@ export function AppShell() {
           </div>
         )}
 
+        {firstServerWelcome && (() => {
+          const welcomeInviteUrl = welcomeInviteCode
+            ? `${typeof window !== "undefined" ? window.location.origin : ""}/?invite=${encodeURIComponent(welcomeInviteCode)}`
+            : null;
+          const closeWelcome = () => {
+            setFirstServerWelcome(null);
+            setWelcomeInviteCode(null);
+            setWelcomeInviteCopied(false);
+          };
+          return (
+            <div
+              className="fixed inset-0 z-[80] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="first-server-welcome-title"
+            >
+              <div className="neon-frame w-full max-w-lg bg-[var(--tk-bg-panel)] p-6 space-y-5">
+                <div className="flex items-start gap-4">
+                  <span className="h-12 w-12 shrink-0 rounded-full neon-active flex items-center justify-center text-2xl" aria-hidden="true">🎉</span>
+                  <div className="min-w-0">
+                    <h3 id="first-server-welcome-title" className="neon-title text-xl font-extrabold">
+                      Seu servidor está pronto!
+                    </h3>
+                    <p className="mt-1 text-sm text-[var(--tk-text-muted)]">
+                      Agora você pode criar um <strong className="text-white">link de convite</strong> para{" "}
+                      <strong className="text-white">{firstServerWelcome.serverName}</strong> e enviar para seus amigos.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="neon-card p-4 space-y-3">
+                  <p className="neon-section-label flex items-center gap-2 text-[13px] font-semibold">
+                    <EqualizerGlyph />
+                    Como seu amigo entra
+                  </p>
+                  <ol className="space-y-2.5 text-sm text-[var(--tk-text-soft)]">
+                    <li className="flex gap-3">
+                      <span className="h-6 w-6 shrink-0 rounded-full neon-active flex items-center justify-center text-xs font-bold">1</span>
+                      <span><strong className="text-white">Primeiro ele cria uma conta</strong> na plataforma (botão &quot;Cadastre-se&quot; na tela de login).</span>
+                    </li>
+                    <li className="flex gap-3">
+                      <span className="h-6 w-6 shrink-0 rounded-full neon-active flex items-center justify-center text-xs font-bold">2</span>
+                      <span><strong className="text-white">Depois, já logado, abre o link de convite</strong> que você mandou.</span>
+                    </li>
+                    <li className="flex gap-3">
+                      <span className="h-6 w-6 shrink-0 rounded-full neon-active flex items-center justify-center text-xs font-bold">3</span>
+                      <span>Pronto: ele entra direto no seu servidor.</span>
+                    </li>
+                  </ol>
+                </div>
+
+                {welcomeInviteUrl ? (
+                  <div className="space-y-2">
+                    <label className="text-xs text-[var(--tk-text-subtle)]" htmlFor="first-server-invite-url">Seu link de convite</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        id="first-server-invite-url"
+                        readOnly
+                        value={welcomeInviteUrl}
+                        onFocus={(event) => event.currentTarget.select()}
+                        className="neon-input flex-1 min-w-0 px-3 py-2 text-sm text-white"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void navigator.clipboard
+                            ?.writeText(welcomeInviteUrl)
+                            .then(() => setWelcomeInviteCopied(true))
+                            .catch(() => setWelcomeInviteCopied(false));
+                        }}
+                        className="neon-active shrink-0 rounded-lg px-4 py-2 text-sm font-semibold"
+                      >
+                        {welcomeInviteCopied ? "Copiado!" : "Copiar"}
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-[var(--tk-text-faint)]">
+                      Você pode ver e apagar seus convites depois em Configurações do servidor → Links de convite.
+                    </p>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void createWelcomeInvite()}
+                    disabled={welcomeInviteBusy}
+                    className="neon-active w-full rounded-xl px-4 py-3 text-sm font-bold disabled:opacity-60"
+                  >
+                    {welcomeInviteBusy ? "Gerando link..." : "Gerar link de convite"}
+                  </button>
+                )}
+
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={closeWelcome}
+                    className="rounded-lg px-4 py-2 text-sm text-[var(--tk-text-muted)] hover:bg-[var(--tk-bg-hover)] hover:text-white"
+                  >
+                    {welcomeInviteUrl ? "Concluir" : "Agora não"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
         {showCreateServerModal && (
           <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
-            <div className="w-full max-w-md rounded-lg border border-[#1F2023] bg-[#2B2D31] p-4 space-y-3">
+            <div className="w-full max-w-md rounded-lg border border-[var(--tk-line)] bg-[var(--tk-bg-panel)] p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="font-medium">Criar novo servidor</h3>
                 <button
@@ -10457,34 +11226,34 @@ export function AppShell() {
                     setNewServerAvatarFile(null);
                     setNewServerAvatarInputKey((value) => value + 1);
                   }}
-                  className="rounded bg-[#383A40] hover:bg-[#404249] px-2 py-1 text-xs"
+                  className="rounded bg-[var(--tk-bg-elev)] hover:bg-[var(--tk-bg-active)] px-2 py-1 text-xs"
                 >
                   Fechar
                 </button>
               </div>
 
               <form onSubmit={createServer} className="space-y-2">
-                <label className="text-xs text-[#949BA4]">Nome do servidor</label>
+                <label className="text-xs text-[var(--tk-text-subtle)]">Nome do servidor</label>
                 <input
-                  className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-2 text-sm"
+                  className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-2 text-sm"
                   value={newServerName}
                   onChange={(event) => setNewServerName(event.target.value)}
                   placeholder="Ex: Meu servidor"
                 />
 
-                <label className="text-xs text-[#949BA4]">Foto do servidor (opcional)</label>
+                <label className="text-xs text-[var(--tk-text-subtle)]">Foto do servidor (opcional)</label>
                 <input
                   key={newServerAvatarInputKey}
                   type="file"
                   accept="image/*"
                   onChange={(event) => setNewServerAvatarFile(event.target.files?.[0] ?? null)}
-                  className="block w-full text-xs text-[#B5BAC1] file:mr-2 file:rounded file:border-0 file:bg-[#4E5058] file:px-2 file:py-1 file:text-[#DBDEE1]"
+                  className="block w-full text-xs text-[var(--tk-text-muted)] file:mr-2 file:rounded file:border-0 file:bg-[var(--tk-border-strong)] file:px-2 file:py-1 file:text-[var(--tk-text)]"
                 />
 
                 <button
                   type="submit"
                   disabled={busy || !newServerName.trim()}
-                  className="w-full rounded bg-[#5865F2] hover:bg-[#5865F2] px-3 py-2 text-sm disabled:opacity-60"
+                  className="w-full rounded bg-[var(--tk-accent)] hover:bg-[var(--tk-accent)] px-3 py-2 text-sm disabled:opacity-60"
                 >
                   Criar servidor
                 </button>
@@ -10495,7 +11264,7 @@ export function AppShell() {
 
         {showMemberRoleModal && (
           <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
-            <div className="w-full max-w-md rounded-lg border border-[#1F2023] bg-[#2B2D31] p-4 space-y-3">
+            <div className="w-full max-w-md rounded-lg border border-[var(--tk-line)] bg-[var(--tk-bg-panel)] p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <h3 className="font-medium">Gerenciar cargo - {editMemberUserName}</h3>
                 <button
@@ -10506,7 +11275,7 @@ export function AppShell() {
                     }
                     setShowMemberRoleModal(false);
                   }}
-                  className="rounded bg-[#383A40] hover:bg-[#404249] px-2 py-1 text-xs"
+                  className="rounded bg-[var(--tk-bg-elev)] hover:bg-[var(--tk-bg-active)] px-2 py-1 text-xs"
                 >
                   Fechar
                 </button>
@@ -10514,11 +11283,11 @@ export function AppShell() {
 
               <form onSubmit={saveEditedMemberRole} className="space-y-3">
                 <div>
-                  <label className="text-xs text-[#949BA4]">Cargo</label>
+                  <label className="text-xs text-[var(--tk-text-subtle)]">Cargo</label>
                   <select
                     value={editMemberRole}
                     onChange={(event) => setEditMemberRole(event.target.value as Role)}
-                    className="w-full rounded bg-[#383A40] border border-[#3F4147] px-2 py-2 text-sm"
+                    className="w-full rounded bg-[var(--tk-bg-elev)] border border-[var(--tk-border)] px-2 py-2 text-sm"
                   >
                     <option value="member">Membro</option>
                     <option value="moderator">Moderador</option>
@@ -10527,8 +11296,8 @@ export function AppShell() {
                 </div>
 
                 {editMemberRole === "moderator" && (
-                  <div className="space-y-1 rounded border border-[#1F2023] bg-[#2B2D31] px-2 py-2 text-xs">
-                    <p className="text-[#B5BAC1] mb-2">Permissões do moderador:</p>
+                  <div className="space-y-1 rounded border border-[var(--tk-line)] bg-[var(--tk-bg-panel)] px-2 py-2 text-xs">
+                    <p className="text-[var(--tk-text-muted)] mb-2">Permissões do moderador:</p>
                     <label className="flex items-center gap-2">
                       <input
                         type="checkbox"
@@ -10613,7 +11382,7 @@ export function AppShell() {
                 <button
                   type="submit"
                   disabled={busy}
-                  className="w-full rounded bg-[#5865F2] hover:bg-[#5865F2] px-3 py-2 text-sm disabled:opacity-60"
+                  className="w-full rounded bg-[var(--tk-accent)] hover:bg-[var(--tk-accent)] px-3 py-2 text-sm disabled:opacity-60"
                 >
                   Salvar cargo
                 </button>

@@ -6,7 +6,7 @@ import { ensureSameAuthenticatedUser, getApiErrorStatus, requireAuthenticatedUse
 import { deleteMessage, updateMessageContent } from "@/lib/store";
 
 // Limite de mensagem configurável via .env
-const MAX_MESSAGE_LENGTH = Number(process.env.NEXT_PUBLIC_MAX_MESSAGE_LENGTH ?? "2000");
+const MAX_MESSAGE_LENGTH = 50_000;
 
 const updateMessageSchema = z.object({
   actorId: z.string().min(2),

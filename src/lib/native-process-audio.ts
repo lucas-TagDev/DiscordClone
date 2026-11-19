@@ -21,8 +21,8 @@ export type ProcessAudioBridge = {
 
 const SAMPLE_RATE = 48000;
 const CHANNELS = 2;
-const JITTER_BUFFER_SECONDS = 0.12;
-const REBUFFER_THRESHOLD_SECONDS = 0.02;
+const JITTER_BUFFER_SECONDS = 0.2;
+const SCHEDULING_SAFETY_SECONDS = 0.002;
 
 export const getProcessAudioBridge = (): ProcessAudioBridge | null => {
   if (typeof window === "undefined") {
@@ -45,6 +45,7 @@ export class ProcessAudioTrackPublisher {
   private track: LocalAudioTrack | null = null;
   private bridge: ProcessAudioBridge | null = null;
   private nextStartTime = 0;
+  private sources = new Set<AudioBufferSourceNode>();
 
   async createTrack(bridge: ProcessAudioBridge): Promise<LocalAudioTrack> {
     const audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
@@ -99,9 +100,14 @@ export class ProcessAudioTrackPublisher {
     source.connect(destination);
 
     const now = audioContext.currentTime;
-    if (this.nextStartTime < now + REBUFFER_THRESHOLD_SECONDS) {
+    // Only rebuffer after a real underrun. Rebuffering while samples are still
+    // queued inserted a new gap whenever the renderer approached the threshold.
+    if (this.nextStartTime <= now) {
       this.nextStartTime = now + JITTER_BUFFER_SECONDS;
     }
+    this.nextStartTime = Math.max(this.nextStartTime, now + SCHEDULING_SAFETY_SECONDS);
+    this.sources.add(source);
+    source.onended = () => { this.sources.delete(source); source.disconnect(); };
     source.start(this.nextStartTime);
     this.nextStartTime += buffer.duration;
   }
@@ -109,6 +115,13 @@ export class ProcessAudioTrackPublisher {
   stop() {
     this.bridge?.removeDataListener();
     this.bridge = null;
+
+    for (const source of this.sources) {
+      source.onended = null;
+      source.stop();
+      source.disconnect();
+    }
+    this.sources.clear();
 
     if (this.track) {
       this.track.stop();

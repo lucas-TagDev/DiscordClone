@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getSafeUploadExtension } from "@/lib/upload-safety";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parseBuffer } from "music-metadata";
@@ -57,7 +58,7 @@ const saveSoundFile = async (file: File): Promise<{ url: string; mimeType: strin
   const extension = path.extname(file.name) || ".audio";
   const baseName = path.basename(file.name, extension);
   const safeBaseName = sanitizeFileName(baseName);
-  const finalFileName = `${Date.now()}-${crypto.randomUUID()}-${safeBaseName}${extension}`;
+  const finalFileName = `${Date.now()}-${crypto.randomUUID()}-${safeBaseName}${getSafeUploadExtension(extension)}`;
 
   const uploadsDir = path.join(process.cwd(), "public", "uploads", "soundboard");
   await mkdir(uploadsDir, { recursive: true });
@@ -104,7 +105,7 @@ const saveSoundGifFile = async (file: File): Promise<string> => {
   const extension = path.extname(file.name) || ".gif";
   const baseName = path.basename(file.name, extension);
   const safeBaseName = sanitizeFileName(baseName);
-  const finalFileName = `${Date.now()}-${crypto.randomUUID()}-${safeBaseName}${extension}`;
+  const finalFileName = `${Date.now()}-${crypto.randomUUID()}-${safeBaseName}${getSafeUploadExtension(extension)}`;
 
   const uploadsDir = path.join(process.cwd(), "public", "uploads", "soundboard-gifs");
   await mkdir(uploadsDir, { recursive: true });

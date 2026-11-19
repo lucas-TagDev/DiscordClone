@@ -8,6 +8,10 @@ type MessagePageOptions = {
   limit?: number;
   beforeCreatedAt?: string;
   beforeId?: string;
+  aroundId?: string;
+  search?: string;
+  author?: string;
+  kind?: "all" | "media" | "links" | "files";
 };
 
 type DirectMessagePageOptions = {
@@ -206,7 +210,7 @@ const mapServer = (server: {
     createdAt: Date;
     userId: string;
   }[];
-  categories: { id: string; name: string }[];
+  categories: { id: string; name: string; position: number }[];
   stickers: {
     id: string;
     serverId: string;
@@ -267,7 +271,7 @@ const mapServer = (server: {
     canMoveVoiceUsers: boolean;
     canManageInvites: boolean;
     notifySoundEnabled: boolean;
-    user: { displayName: string; avatarUrl: string | null };
+    user: { displayName: string; avatarUrl: string | null; lastSeenAt?: Date | null; lastLoginAt?: Date | null };
   }[];
 }): Server => ({
   id: server.id,
@@ -290,7 +294,8 @@ const mapServer = (server: {
   allowModeratorEmojiCreate: server.allowModeratorEmojiCreate,
   lastMessageAt: server.messages?.[0]?.createdAt.toISOString() ?? null,
   lastMessageUserId: server.messages?.[0]?.userId ?? null,
-  categories: server.categories.map((category): ChannelCategory => ({
+  categories: [...server.categories].sort((a, b) => a.position - b.position || a.id.localeCompare(b.id)).map((category): ChannelCategory => ({
+    position: category.position,
     id: category.id,
     name: category.name,
   })),
@@ -342,6 +347,7 @@ const mapServer = (server: {
     createdAt: member.createdAt.toISOString(),
     userName: member.user.displayName,
     avatarUrl: member.user.avatarUrl,
+    lastSeenAt: (member.user.lastSeenAt ?? member.user.lastLoginAt)?.toISOString() ?? null,
     permissions: {
       canRemoveMembers: member.canRemoveMembers,
       canBanUsers: member.canBanUsers,
@@ -520,6 +526,8 @@ const getServer = async (serverId: string) => {
             select: {
               displayName: true,
               avatarUrl: true,
+              lastSeenAt: true,
+              lastLoginAt: true,
             },
           },
         },
@@ -757,6 +765,8 @@ export const listServersByUser = async (userId: string): Promise<Server[]> => {
             select: {
               displayName: true,
               avatarUrl: true,
+              lastSeenAt: true,
+              lastLoginAt: true,
             },
           },
         },
@@ -857,6 +867,8 @@ export const createServer = async (
             select: {
               displayName: true,
               avatarUrl: true,
+              lastSeenAt: true,
+              lastLoginAt: true,
             },
           },
         },
@@ -1185,6 +1197,8 @@ export const updateServerSettings = async (
             select: {
               displayName: true,
               avatarUrl: true,
+              lastSeenAt: true,
+              lastLoginAt: true,
             },
           },
         },
@@ -1815,10 +1829,12 @@ export const createCategory = async (
     throw new Error("Nome da categoria deve ter entre 2 e 30 caracteres.");
   }
 
+  const lastCategory = await db.channelCategory.aggregate({ where: { serverId }, _max: { position: true } });
   const category = await db.channelCategory.create({
     data: {
       serverId,
       name: trimmedName,
+      position: (lastCategory._max.position ?? -1) + 1,
     },
   });
 
@@ -1877,6 +1893,25 @@ export const updateCategoryByOwner = async (
     id: category.id,
     name: category.name,
   };
+};
+
+export const moveCategoryByOwner = async (
+  serverId: string, categoryId: string, actorId: string, direction: "up" | "down",
+): Promise<void> => {
+  await assertServerOwner(serverId, actorId);
+  await db.$transaction(async (transaction) => {
+    const categories = await transaction.channelCategory.findMany({
+      where: { serverId }, orderBy: [{ position: "asc" }, { id: "asc" }],
+    });
+    const index = categories.findIndex((category) => category.id === categoryId);
+    if (index < 0) throw new Error("Categoria não encontrada neste servidor.");
+    const target = index + (direction === "up" ? -1 : 1);
+    if (target < 0 || target >= categories.length) return;
+    [categories[index], categories[target]] = [categories[target], categories[index]];
+    for (const [position, category] of categories.entries()) {
+      await transaction.channelCategory.update({ where: { id: category.id }, data: { position } });
+    }
+  });
 };
 
 export const deleteCategoryByOwner = async (
@@ -4413,9 +4448,56 @@ export const listMessagesPage = async (
     throw new Error("Seu cargo não pode acessar este canal.");
   }
 
+  if (options.aroundId) {
+    const include = {
+      attachments: true,
+      user: { select: { displayNameStyle: true } },
+      reactions: { include: { user: { select: { displayName: true } } }, orderBy: { createdAt: "asc" as const } },
+    };
+    // Fetch the requested row explicitly; it must never depend on a page boundary.
+    const target = await db.message.findFirst({
+      where: { id: options.aroundId, serverId, channelId }, include,
+    });
+    if (!target) throw new Error("Esta mensagem foi excluída ou não pertence a este canal.");
+    const [before, after] = await Promise.all([
+      db.message.findMany({
+        where: { serverId, channelId, id: { not: target.id }, OR: [
+          { createdAt: { lt: target.createdAt } },
+          { createdAt: target.createdAt, id: { lt: target.id } },
+        ] }, include, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 31,
+      }),
+      db.message.findMany({
+        where: { serverId, channelId, id: { not: target.id }, OR: [
+          { createdAt: { gt: target.createdAt } },
+          { createdAt: target.createdAt, id: { gt: target.id } },
+        ] }, include, orderBy: [{ createdAt: "asc" }, { id: "asc" }], take: 30,
+      }),
+    ]);
+    return { messages: [...before.slice(0, 30).reverse(), target, ...after].map(mapMessage), hasMore: before.length > 30 };
+  }
+
   const safeLimit = Math.max(1, Math.min(100, options.limit ?? 30));
 
-  const whereClause = {
+  const filters: Prisma.MessageWhereInput[] = [];
+  if (options.search?.trim()) filters.push({ content: { contains: options.search.trim(), mode: "insensitive" } });
+  if (options.author?.trim()) filters.push({ OR: [
+    { userId: { contains: options.author.trim(), mode: "insensitive" } },
+    { userName: { contains: options.author.trim(), mode: "insensitive" } },
+  ] });
+  if (options.kind === "links") filters.push({ OR: [
+    { content: { contains: "https://", mode: "insensitive" } },
+    { content: { contains: "http://", mode: "insensitive" } },
+  ] });
+  if (options.kind === "files") filters.push({ OR: [
+    { attachments: { some: {} } }, { content: { contains: "[file]|" } },
+  ] });
+  if (options.kind === "media") filters.push({ OR: [
+    { attachments: { some: { OR: ["image/", "video/", "audio/"].map((prefix) => ({ mimeType: { startsWith: prefix } })) } } },
+    ...[".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp4", ".webm", ".mp3", ".ogg", ".wav", "[sticker:"].map((extension) => ({ content: { contains: extension, mode: "insensitive" as const } })),
+  ] });
+
+  const whereClause: Prisma.MessageWhereInput = {
+    AND: filters,
     serverId,
     channelId,
     ...(options.beforeCreatedAt
@@ -4474,6 +4556,11 @@ export const listMessagesPage = async (
     hasMore,
   };
 };
+
+export const getMessageContext = async (
+  serverId: string, channelId: string, userId: string, messageId: string,
+): Promise<{ messages: ChatMessage[]; hasMore: boolean }> =>
+  listMessagesPage(serverId, channelId, userId, { aroundId: messageId });
 
 export const listMessages = async (serverId: string, channelId: string, userId: string): Promise<ChatMessage[]> => {
   const page = await listMessagesPage(serverId, channelId, userId, { limit: 100 });
@@ -4803,6 +4890,7 @@ export const registerUser = async (
   username: string,
   displayName: string,
   password: string,
+  clientIp: string | null = null,
 ): Promise<AppUser> => {
   const normalizedUsername = normalizeUsername(username);
   const normalizedDisplayName = normalizeDisplayName(displayName);
@@ -4827,6 +4915,10 @@ export const registerUser = async (
           username: normalizedUsername,
           displayName: normalizedDisplayName || generatedUserId,
           passwordHash,
+          registrationIp: clientIp,
+          lastLoginIp: clientIp,
+          lastLoginAt: new Date(),
+          accessLogs: { create: { event: "register", ip: clientIp } },
           joinWithMicEnabled: true,
           joinWithCameraEnabled: false,
           noiseSuppressionEnabled: true,
@@ -4861,6 +4953,7 @@ export const registerUser = async (
 export const authenticateUser = async (
   username: string,
   password: string,
+  clientIp: string | null = null,
 ): Promise<AppUser> => {
   const normalizedUsername = normalizeUsername(username);
   const user = await db.user.findUnique({ where: { username: normalizedUsername } });
@@ -4874,7 +4967,15 @@ export const authenticateUser = async (
     throw new Error("Usuário ou senha inválidos.");
   }
 
-  return mapAppUser(user);
+  const updatedUser = await db.user.update({
+    where: { id: user.id },
+    data: {
+      lastLoginIp: clientIp,
+      lastLoginAt: new Date(),
+      accessLogs: { create: { event: "login", ip: clientIp } },
+    },
+  });
+  return mapAppUser(updatedUser);
 };
 
 export const getUserProfile = async (userId: string): Promise<AppUser> => {

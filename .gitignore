@@ -35,3 +35,13 @@ prisma/prisma/
 npm-debug.log*
 .DS_Store
 Thumbs.db
+
+# App desktop Windows: instalador gerado e dependências
+partiuchat-desktop/dist/
+
+# Cópias de segurança locais de arquivos editados
+*.backup*
+*.tsx60fps
+
+# Configuração local do Claude Code
+.claude/

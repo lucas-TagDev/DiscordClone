@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { ensureSameAuthenticatedUser, getApiErrorStatus, requireAuthenticatedUserId } from "@/lib/api-auth";
-import { deleteCategoryByOwner, updateCategoryByOwner } from "@/lib/store";
+import { deleteCategoryByOwner, updateCategoryByOwner, moveCategoryByOwner } from "@/lib/store";
 
 const updateCategorySchema = z.object({
   actorId: z.string().min(2),
-  name: z.string().min(2).max(30),
+  name: z.string().min(2).max(30).optional(),
+  direction: z.enum(["up", "down"]).optional(),
 });
 
 type Params = {
@@ -19,6 +20,11 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     const authenticatedUserId = requireAuthenticatedUserId(request);
     const body = updateCategorySchema.parse(await request.json());
     ensureSameAuthenticatedUser(authenticatedUserId, body.actorId);
+    if (body.direction) {
+      await moveCategoryByOwner(serverId, categoryId, authenticatedUserId, body.direction);
+      return NextResponse.json({ ok: true });
+    }
+    if (!body.name) return NextResponse.json({ error: "Informe um nome ou direção." }, { status: 400 });
     const category = await updateCategoryByOwner(serverId, categoryId, authenticatedUserId, body.name);
     return NextResponse.json({ category });
   } catch (error) {

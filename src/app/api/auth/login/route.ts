@@ -1,8 +1,10 @@
+import { getClientIp } from "@/lib/client-ip";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { authenticateUser } from "@/lib/store";
 import { createAuthToken, getAuthCookieName, getAuthTokenTtlSeconds } from "@/lib/auth";
 import { isTurnstileEnabled, verifyTurnstileToken } from "@/lib/turnstile";
+import { clearLoginFailures, getLoginRetryAfterSeconds, registerLoginFailure } from "@/lib/login-rate-limit";
 
 const loginSchema = z.object({
   username: z
@@ -16,8 +18,18 @@ const loginSchema = z.object({
 });
 
 export async function POST(request: Request) {
+  const clientIpForLimit = getClientIp(request.headers);
   try {
     const body = loginSchema.parse(await request.json());
+
+    const retryAfterSeconds = getLoginRetryAfterSeconds(body.username, clientIpForLimit);
+    if (retryAfterSeconds > 0) {
+      const minutes = Math.max(1, Math.ceil(retryAfterSeconds / 60));
+      return NextResponse.json(
+        { error: `Muitas tentativas de login. Tente novamente em ${minutes} minuto(s).` },
+        { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
+      );
+    }
 
     // Validar Turnstile se estiver habilitado
     if (isTurnstileEnabled()) {
@@ -28,7 +40,7 @@ export async function POST(request: Request) {
         );
       }
 
-      const clientIp = request.headers.get("x-forwarded-for") ?? request.headers.get("x-real-ip") ?? undefined;
+      const clientIp = getClientIp(request.headers) ?? undefined;
       const isValid = await verifyTurnstileToken(body.turnstileToken, clientIp);
       
       if (!isValid) {
@@ -39,7 +51,14 @@ export async function POST(request: Request) {
       }
     }
 
-    const user = await authenticateUser(body.username, body.password);
+    let user;
+    try {
+      user = await authenticateUser(body.username, body.password, clientIpForLimit);
+    } catch (authError) {
+      registerLoginFailure(body.username, clientIpForLimit);
+      throw authError;
+    }
+    clearLoginFailures(body.username);
     const response = NextResponse.json({ user });
     response.cookies.set({
       name: getAuthCookieName(),

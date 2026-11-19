@@ -43,15 +43,15 @@ export function ElectronTitlebar() {
 
   return (
     <div
-      className="flex items-center h-8 bg-[#1E1F22] select-none shrink-0"
+      className="flex items-center h-8 bg-[var(--tk-bg-deep)] select-none shrink-0"
       style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
     >
       {/* App icon + name */}
       <div className="flex items-center gap-2 px-3">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="#5865F2">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="#A855F7">
           <path d="M19.27 5.33C17.94 4.71 16.5 4.26 15 4a.09.09 0 0 0-.07.03c-.18.33-.39.76-.53 1.09a16.09 16.09 0 0 0-4.8 0c-.14-.34-.35-.76-.54-1.09-.01-.02-.04-.03-.07-.03-1.5.26-2.93.71-4.27 1.33-.01 0-.02.01-.03.02-2.72 4.07-3.47 8.03-3.1 11.95 0 .02.01.04.03.05 1.8 1.32 3.53 2.12 5.24 2.65.03.01.06 0 .07-.02.4-.55.76-1.13 1.07-1.74.02-.04 0-.08-.04-.09-.57-.22-1.11-.48-1.64-.78-.04-.02-.04-.08-.01-.11.11-.08.22-.17.33-.25.02-.02.05-.02.07-.01 3.44 1.57 7.15 1.57 10.55 0 .02-.01.05-.01.07.01.11.09.22.17.33.26.04.03.04.09-.01.11-.52.31-1.07.56-1.64.78-.04.01-.05.06-.04.09.32.61.68 1.19 1.07 1.74.03.01.05.02.07.02 1.72-.53 3.45-1.33 5.24-2.65.02-.01.03-.03.03-.05.44-4.53-.73-8.46-3.1-11.95-.01-.01-.02-.02-.04-.02ZM8.52 14.91c-1.03 0-1.89-.95-1.89-2.12s.84-2.12 1.89-2.12c1.06 0 1.9.96 1.89 2.12 0 1.17-.84 2.12-1.89 2.12Zm6.97 0c-1.03 0-1.89-.95-1.89-2.12s.84-2.12 1.89-2.12c1.06 0 1.9.96 1.89 2.12 0 1.17-.83 2.12-1.89 2.12Z" />
         </svg>
-        <span className="text-xs text-[#949BA4] font-medium">PartiuChat</span>
+        <span className="text-xs text-[var(--tk-text-subtle)] font-medium">PartiuChat</span>
       </div>
 
       {/* Update banner */}
@@ -66,7 +66,7 @@ export function ElectronTitlebar() {
         </button>
       )}
       {updateStatus === "downloading" && (
-        <span className="ml-auto mr-2 text-[10px] text-[#949BA4]">Baixando atualização...</span>
+        <span className="ml-auto mr-2 text-[10px] text-[var(--tk-text-subtle)]">Baixando atualização...</span>
       )}
 
       {/* Spacer */}
@@ -81,7 +81,7 @@ export function ElectronTitlebar() {
         <button
           type="button"
           onClick={handleMinimize}
-          className="w-[46px] h-full flex items-center justify-center text-[#B5BAC1] hover:bg-[#383A40] transition-colors"
+          className="w-[46px] h-full flex items-center justify-center text-[var(--tk-text-muted)] hover:bg-[var(--tk-bg-elev)] transition-colors"
         >
           <svg width="12" height="12" viewBox="0 0 12 12">
             <rect x="1" y="5.5" width="10" height="1" fill="currentColor" />
@@ -92,7 +92,7 @@ export function ElectronTitlebar() {
         <button
           type="button"
           onClick={handleMaximize}
-          className="w-[46px] h-full flex items-center justify-center text-[#B5BAC1] hover:bg-[#383A40] transition-colors"
+          className="w-[46px] h-full flex items-center justify-center text-[var(--tk-text-muted)] hover:bg-[var(--tk-bg-elev)] transition-colors"
         >
           {isMaximized ? (
             <svg width="12" height="12" viewBox="0 0 12 12">
@@ -110,7 +110,7 @@ export function ElectronTitlebar() {
         <button
           type="button"
           onClick={handleClose}
-          className="w-[46px] h-full flex items-center justify-center text-[#B5BAC1] hover:bg-[#ED4245] hover:text-white transition-colors"
+          className="w-[46px] h-full flex items-center justify-center text-[var(--tk-text-muted)] hover:bg-[#ED4245] hover:text-white transition-colors"
         >
           <svg width="12" height="12" viewBox="0 0 12 12">
             <path d="M1 1L11 11M11 1L1 11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />

@@ -5,13 +5,15 @@ import {
   ControlBar,
   LiveKitRoom,
   ParticipantTile,
-  RoomAudioRenderer,
+  AudioTrack,
   TrackToggle,
   useParticipants,
+  useMediaDeviceSelect,
   useRoomContext,
   useTracks,
 } from "@livekit/components-react";
 import {
+  AudioPresets,
   LocalAudioTrack,
   RemoteAudioTrack,
   RemoteParticipant,
@@ -22,12 +24,14 @@ import {
   type RoomOptions,
   type ScreenShareCaptureOptions,
   type VideoCaptureOptions,
+  type TrackPublishOptions,
 } from "livekit-client";
 import { ServerSound } from "@/lib/types";
 import { getProcessAudioBridge, ProcessAudioTrackPublisher } from "@/lib/native-process-audio";
 import { applyRnnNoiseToLiveKitTrack, detachRnnNoise, RnnNoiseAttachment } from "@/lib/rnnoise-processor";
 import { createDeepFilterProcessor } from "@/lib/deepfilter-processor";
 import { SoundGifOverlay } from "@/components/sound-gif-overlay";
+import { useIsMobile } from "@/lib/use-is-mobile";
 
 type SoundPlayingState = {
   soundName: string;
@@ -40,8 +44,26 @@ const CAMERA_CAPTURE_OPTIONS = {
   resolution: { width: 1280, height: 720, frameRate: VIDEO_FRAME_RATE },
   frameRate: { ideal: VIDEO_FRAME_RATE, max: VIDEO_FRAME_RATE },
 } satisfies VideoCaptureOptions;
+const SHARED_AUDIO_CAPTURE_OPTIONS = {
+  // System/tab capture can contain the room playback; retain echo protection.
+  echoCancellation: true,
+  // Supported browsers can exclude audio produced by this calling page.
+  restrictOwnAudio: true,
+  noiseSuppression: false,
+  autoGainControl: false,
+  channelCount: 2,
+  sampleRate: 48000,
+};
+const SHARED_AUDIO_PUBLISH_OPTIONS = {
+  audioPreset: AudioPresets.musicHighQualityStereo,
+  forceStereo: true,
+  dtx: false,
+  red: true,
+} satisfies TrackPublishOptions;
 const SCREEN_SHARE_CAPTURE_OPTIONS = {
-  audio: true,
+  audio: SHARED_AUDIO_CAPTURE_OPTIONS,
+  selfBrowserSurface: "exclude",
+  systemAudio: "include",
   resolution: { width: 1920, height: 1080, frameRate: VIDEO_FRAME_RATE },
   contentHint: "motion",
 } satisfies ScreenShareCaptureOptions;
@@ -53,6 +75,10 @@ const ROOM_OPTIONS = {
     degradationPreference: "maintain-framerate",
   },
 } satisfies RoomOptions;
+// LiveKit adds a session suffix that changes when the user reconnects.
+const getVolumeParticipantKey = (participantId: string) =>
+  participantId.split("::")[0].trim().toLowerCase();
+
 const MAX_SOUND_DURATION_SECONDS = 10;
 const SOUND_PLAY_GLOBAL_COOLDOWN_MS = 1000;
 const SOUND_PLAY_PER_SOUND_COOLDOWN_MS = 2500;
@@ -60,14 +86,104 @@ const SOUND_PLAY_INCOMING_WINDOW_MS = 6000;
 const SOUND_PLAY_INCOMING_MAX_PER_USER = 4;
 const SOUND_PLAY_WARNING_COOLDOWN_MS = 2500;
 
+const normalizeParticipantVolume = (volume: number) =>
+  Number.isFinite(volume) ? Math.max(0, Math.min(100, Math.round(volume * 10) / 10)) : 100;
+
+// A curved gain gives more control over loud participants at low slider values.
+const participantVolumeToGain = (volume: number) => (normalizeParticipantVolume(volume) / 100) ** 2;
+
+function VoiceAudioRenderer({ microphoneVolumes, sharedVolumes, ready }: {
+  microphoneVolumes: Record<string, number>;
+  sharedVolumes: Record<string, number>;
+  ready: boolean;
+}) {
+  const audioTracks = useTracks([Track.Source.Microphone, Track.Source.ScreenShareAudio, Track.Source.Unknown], {
+    onlySubscribed: true,
+  }).filter((trackRef) => !trackRef.participant.isLocal && trackRef.publication.kind === Track.Kind.Audio);
+  if (!ready) return null;
+  return <div style={{ display: "none" }}>
+    {audioTracks.map((trackRef) => {
+      const volumes = trackRef.source === Track.Source.ScreenShareAudio ? sharedVolumes : microphoneVolumes;
+      const volume = volumes[getVolumeParticipantKey(trackRef.participant.identity)] ?? 100;
+      return <AudioTrack key={`${trackRef.participant.identity}:${trackRef.publication.trackSid}`}
+        trackRef={trackRef} volume={participantVolumeToGain(volume)} />;
+    })}
+  </div>;
+}
+
+const cameraStorageKey = (userId: string) => `twinslkit:voice:camera:${userId.trim().toLowerCase()}`;
+
+const readCameraPreference = (userId: string): string | undefined => {
+  try {
+    return typeof window !== "undefined" ? window.localStorage.getItem(cameraStorageKey(userId)) || undefined : undefined;
+  } catch { return undefined; }
+};
+
+function CameraDeviceControl({ currentUserId }: { currentUserId: string }) {
+  const room = useRoomContext();
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const onDeviceError = useCallback(() => {
+    setError("Não foi possível acessar as câmeras. Verifique a permissão de câmera do navegador.");
+  }, []);
+  const { devices, activeDeviceId } = useMediaDeviceSelect({
+    kind: "videoinput", requestPermissions: open, onError: onDeviceError,
+  });
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open]);
+
+  const selectCamera = async (deviceId: string) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const success = await room.switchActiveDevice("videoinput", deviceId, true);
+      if (!success) throw new Error("Câmera indisponível.");
+      try { window.localStorage.setItem(cameraStorageKey(currentUserId), deviceId); } catch { /* storage unavailable */ }
+      setOpen(false);
+    } catch {
+      setError("Não foi possível selecionar esta câmera. Verifique se ela está conectada e disponível.");
+    } finally { setBusy(false); }
+  };
+
+  return <div className="relative">
+    <button type="button" aria-label="Escolher câmera" title="Escolher câmera" aria-expanded={open}
+      onClick={() => { setError(null); setOpen((value) => !value); }}
+      className="flex h-10 w-7 items-center justify-center rounded-r-md text-zinc-300 hover:bg-[var(--tk-bg-elev)] hover:text-white">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+    </button>
+    {open && <>
+      <button type="button" aria-label="Fechar seleção de câmera" className="fixed inset-0 z-[59] cursor-default" onClick={() => setOpen(false)} />
+      <div className="absolute bottom-full left-1/2 z-[60] mb-3 w-72 -translate-x-1/2 rounded-lg border border-zinc-700 bg-[var(--tk-bg-panel)] p-2 shadow-xl">
+        <p className="px-2 py-2 text-sm font-medium text-white">Escolher câmera</p>
+        {error && <p role="alert" className="px-2 pb-2 text-xs text-red-300">{error}</p>}
+        <div role="group" aria-label="Câmeras disponíveis" className="max-h-64 overflow-y-auto">
+          {devices.map((device, index) => <button key={device.deviceId} type="button" disabled={busy}
+            aria-pressed={device.deviceId === activeDeviceId} onClick={() => void selectCamera(device.deviceId)}
+            className={`block w-full rounded px-2 py-2 text-left text-sm text-white disabled:opacity-50 ${device.deviceId === activeDeviceId ? "bg-[var(--tk-accent)]" : "hover:bg-[var(--tk-bg-elev)]"}`}>
+            {device.label || `Câmera ${index + 1}`}{device.deviceId === activeDeviceId ? " ✓" : ""}
+          </button>)}
+          {devices.length === 0 && !error && <p className="p-2 text-xs text-zinc-400">Nenhuma câmera disponível. Permita o acesso à câmera no navegador.</p>}
+        </div>
+        <p className="px-2 pt-2 text-[11px] text-zinc-400">A escolha será salva neste navegador. Selecionar não liga a câmera.</p>
+      </div>
+    </>}
+  </div>;
+}
+
 const applyTrackVolume = (audioTrack: LocalAudioTrack | RemoteAudioTrack | undefined, volume: number) => {
   if (!audioTrack) {
     return;
   }
 
   if ("setVolume" in audioTrack && typeof audioTrack.setVolume === "function") {
-    const normalizedVolume = Math.max(0, Math.min(100, volume));
-    audioTrack.setVolume(normalizedVolume / 100);
+    audioTrack.setVolume(participantVolumeToGain(volume));
   }
 };
 
@@ -210,6 +326,7 @@ type VoiceRoomProps = {
   }) => Promise<void> | void;
   onPresenceStatusChanged?: () => void;
   onListeningStateChanged?: (stateByUserId: Record<string, boolean>) => void;
+  onMicrophoneStateChanged?: (enabled: boolean) => void;
   onLeave: (disconnectedToken: string) => void;
 };
 
@@ -233,30 +350,40 @@ export function VoiceRoom({
   onModerationAction,
   onPresenceStatusChanged,
   onListeningStateChanged,
+  onMicrophoneStateChanged,
   onLeave,
 }: VoiceRoomProps) {
   const micCaptureOptions = useMemo(
     () => ({
       noiseSuppression: noiseSuppressionEnabled,
-      echoCancellation: noiseSuppressionEnabled,
+      // Echo prevention is independent from the optional noise filter.
+      echoCancellation: true,
       autoGainControl: noiseSuppressionEnabled,
     }),
     [noiseSuppressionEnabled],
   );
 
+  const roomOptions = useMemo<RoomOptions>(() => {
+    const deviceId = readCameraPreference(currentUserId);
+    return {
+      ...ROOM_OPTIONS,
+      videoCaptureDefaults: { ...CAMERA_CAPTURE_OPTIONS, ...(deviceId ? { deviceId: { ideal: deviceId } } : {}) },
+    };
+  }, [currentUserId]);
+
   return (
-    <div className="h-full min-h-[520px] rounded-md border border-zinc-700 overflow-hidden">
+    <div className="h-full min-h-0 min-w-0 rounded-md border border-zinc-700 overflow-hidden">
       <LiveKitRoom
         token={token}
         serverUrl={serverUrl}
         connect
         video={joinWithCameraEnabled}
         audio={joinWithMicEnabled ? micCaptureOptions : false}
-        options={ROOM_OPTIONS}
+        options={roomOptions}
         connectOptions={ROOM_CONNECT_OPTIONS}
         onDisconnected={() => onLeave(token)}
         data-lk-theme="default"
-        className="h-full bg-zinc-950"
+        className="h-full min-h-0 min-w-0 bg-zinc-950"
       >
         <VoiceRoomContent
           serverId={serverId}
@@ -275,6 +402,7 @@ export function VoiceRoom({
           onModerationAction={onModerationAction}
           onPresenceStatusChanged={onPresenceStatusChanged}
           onListeningStateChanged={onListeningStateChanged}
+          onMicrophoneStateChanged={onMicrophoneStateChanged}
         />
       </LiveKitRoom>
     </div>
@@ -298,6 +426,7 @@ function VoiceRoomContent({
   onModerationAction,
   onPresenceStatusChanged,
   onListeningStateChanged,
+  onMicrophoneStateChanged,
 }: {
   serverId: string | null;
   avatarByUserId: Record<string, string>;
@@ -323,9 +452,25 @@ function VoiceRoomContent({
   }) => Promise<void> | void;
   onPresenceStatusChanged?: () => void;
   onListeningStateChanged?: (stateByUserId: Record<string, boolean>) => void;
+  onMicrophoneStateChanged?: (enabled: boolean) => void;
 }) {
   const room = useRoomContext();
+  const isMobile = useIsMobile();
   const participants = useParticipants();
+
+  useEffect(() => {
+    const reportMicrophone = () => {
+      // Disconnecting unpublishes tracks; that must not overwrite the mute state.
+      if (room.state !== "connected") return;
+      const microphone = room.localParticipant.getTrackPublication(Track.Source.Microphone);
+      if (microphone) onMicrophoneStateChanged?.(!microphone.isMuted);
+    };
+    const events = [RoomEvent.Connected, RoomEvent.LocalTrackPublished, RoomEvent.TrackMuted, RoomEvent.TrackUnmuted];
+    events.forEach((event) => room.on(event, reportMicrophone));
+    reportMicrophone();
+    return () => { events.forEach((event) => room.off(event, reportMicrophone)); };
+  }, [room, onMicrophoneStateChanged]);
+
 
   // Keybind event listeners for global shortcuts dispatched from app-shell
   useEffect(() => {
@@ -357,6 +502,8 @@ function VoiceRoomContent({
   const initializedAudioPublicationSidsRef = useRef(new Set<string>());
   const initializedPublicationSidsRef = useRef(new Set<string>());
   const [hiddenTrackKeys, setHiddenTrackKeys] = useState<string[]>([]);
+  const [focusedStreamKey, setFocusedStreamKey] = useState<string | null>(null);
+  const [fullscreenSource, setFullscreenSource] = useState<Track.Source | null>(null);
   const [fullscreenParticipantId, setFullscreenParticipantId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{
     participantId: string;
@@ -507,6 +654,7 @@ function VoiceRoomContent({
     nativeShareAudioSessionRef.current = session;
     const isCurrent = () => nativeShareAudioSessionRef.current === session;
     const publisher = new ProcessAudioTrackPublisher();
+    nativeShareAudioRef.current = publisher;
 
     try {
       const status = await bridge.getStatus();
@@ -529,12 +677,18 @@ function VoiceRoomContent({
 
       nativeShareAudioRef.current = publisher;
       nativeShareAudioTrackRef.current = track;
-      await room.localParticipant.publishTrack(track, { source: Track.Source.ScreenShareAudio });
+      await room.localParticipant.publishTrack(track, { ...SHARED_AUDIO_PUBLISH_OPTIONS, source: Track.Source.ScreenShareAudio });
     } catch (error) {
       publisher.stop();
-      nativeShareAudioTrackRef.current = null;
-      void bridge.stop().catch(() => undefined);
+      if (isCurrent()) {
+        nativeShareAudioTrackRef.current = null;
+        void bridge.stop().catch(() => undefined);
+      }
       console.error("Falha ao iniciar o áudio da transmissão:", error);
+    } finally {
+      if (nativeShareAudioRef.current === publisher && !nativeShareAudioTrackRef.current) {
+        nativeShareAudioRef.current = null;
+      }
     }
   }, [room]);
 
@@ -772,14 +926,13 @@ function VoiceRoomContent({
     setAudioOnlyShareError(null);
 
     try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-        },
+      const captureOptions = {
+        audio: SHARED_AUDIO_CAPTURE_OPTIONS,
         video: true,
-      });
+        selfBrowserSurface: "exclude",
+        systemAudio: "include",
+      };
+      const stream = await navigator.mediaDevices.getDisplayMedia(captureOptions);
 
       const [audioTrack] = stream.getAudioTracks();
       if (!audioTrack) {
@@ -800,6 +953,7 @@ function VoiceRoomContent({
       });
 
       await room.localParticipant.publishTrack(localTrack, {
+        ...SHARED_AUDIO_PUBLISH_OPTIONS,
         source: Track.Source.ScreenShareAudio,
       });
 
@@ -1227,7 +1381,7 @@ function VoiceRoomContent({
 
   // Toca um som personalizado se existir em /sounds/, senão usa beep sintetizado
   const playEventSound = useCallback((type: "join" | "leave" | "stream") => {
-    if (typeof window === "undefined") {
+    if (typeof window === "undefined" || room.state !== "connected") {
       return;
     }
 
@@ -1244,11 +1398,17 @@ function VoiceRoomContent({
 
     const audio = new Audio(soundFiles[type]);
     audio.volume = volume;
+    audioPlayersRef.current.push(audio);
+    const release = () => {
+      audioPlayersRef.current = audioPlayersRef.current.filter((player) => player !== audio);
+    };
+    audio.addEventListener("ended", release, { once: true });
     audio.play().catch(() => {
-      // Fallback: arquivo não encontrado ou bloqueado -> beep sintetizado
-      playSynthesizedEventSound(type, volume);
+      const stillActive = audioPlayersRef.current.includes(audio);
+      release();
+      if (stillActive && room.state === "connected") playSynthesizedEventSound(type, volume);
     });
-  }, [soundEffectsVolume, playSynthesizedEventSound]);
+  }, [room, soundEffectsVolume, playSynthesizedEventSound]);
 
   // Sons de entrada/saída de participantes
   useEffect(() => {
@@ -1871,17 +2031,23 @@ function VoiceRoomContent({
     );
   };
 
-  const fullscreenTrack = fullscreenParticipantId ? getPreferredTrack(fullscreenParticipantId) : null;
+  const fullscreenTrack = fullscreenParticipantId
+    ? fullscreenSource
+      ? visibleTrackRefs.find((trackRef) =>
+          trackRef.participant.identity === fullscreenParticipantId && trackRef.source === fullscreenSource,
+        ) ?? null
+      : getPreferredTrack(fullscreenParticipantId)
+    : null;
 
   const getRemoteParticipant = (participantId: string) => room.remoteParticipants.get(participantId);
 
   const getAudioPublicationVolume = useCallback(
     (participantId: string, source: Track.Source | undefined) => {
       if (source === Track.Source.ScreenShareAudio) {
-        return sharedAudioVolumeByParticipant[participantId] ?? 100;
+        return sharedAudioVolumeByParticipant[getVolumeParticipantKey(participantId)] ?? 100;
       }
 
-      return audioVolumeByParticipant[participantId] ?? 100;
+      return audioVolumeByParticipant[getVolumeParticipantKey(participantId)] ?? 100;
     },
     [audioVolumeByParticipant, sharedAudioVolumeByParticipant],
   );
@@ -2015,28 +2181,30 @@ function VoiceRoomContent({
   }, [micCaptureOptions, room.localParticipant]);
 
   useEffect(() => {
-    try {
-      const rawValue =
-        window.sessionStorage.getItem(volumeStorageKey) ??
-        window.sessionStorage.getItem(`twinslkit:voice:volume:${roomStorageScope}`) ??
-        window.localStorage.getItem(volumeStorageKey);
-      if (rawValue) {
-        const parsed = JSON.parse(rawValue) as Record<string, number>;
+    const readVolumes = (key: string, legacyKey?: string): Record<string, number> => {
+      try {
+        const rawValue =
+          window.localStorage.getItem(key) ??
+          window.sessionStorage.getItem(key) ??
+          (legacyKey ? window.sessionStorage.getItem(legacyKey) : null);
+        const parsed: unknown = rawValue ? JSON.parse(rawValue) : {};
         const sanitized: Record<string, number> = {};
-        Object.entries(parsed).forEach(([participantId, value]) => {
-          const normalizedValue = Math.max(0, Math.min(100, Math.round(Number(value))));
-          if (Number.isFinite(normalizedValue)) {
-            sanitized[participantId] = normalizedValue;
-          }
-        });
-
-        setAudioVolumeByParticipant(sanitized);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          Object.entries(parsed).forEach(([participantId, value]) => {
+            if (typeof value === "number" && Number.isFinite(value)) {
+              sanitized[getVolumeParticipantKey(participantId)] = normalizeParticipantVolume(value);
+            }
+          });
+        }
+        return sanitized;
+      } catch {
+        return {};
       }
-    } catch {
-      // ignore invalid persisted values
-    } finally {
-      setLoadedVolumeStorageKey(volumeStorageKey);
-    }
+    };
+
+    setAudioVolumeByParticipant(readVolumes(volumeStorageKey, `twinslkit:voice:volume:${roomStorageScope}`));
+    setSharedAudioVolumeByParticipant(readVolumes(`${volumeStorageKey}:shared`));
+    setLoadedVolumeStorageKey(volumeStorageKey);
   }, [roomStorageScope, volumeStorageKey]);
 
   useEffect(() => {
@@ -2045,11 +2213,12 @@ function VoiceRoomContent({
     }
 
     try {
-      window.sessionStorage.setItem(volumeStorageKey, JSON.stringify(audioVolumeByParticipant));
+      window.localStorage.setItem(volumeStorageKey, JSON.stringify(audioVolumeByParticipant));
+      window.localStorage.setItem(`${volumeStorageKey}:shared`, JSON.stringify(sharedAudioVolumeByParticipant));
     } catch {
       // ignore storage quota / privacy mode failures
     }
-  }, [audioVolumeByParticipant, loadedVolumeStorageKey, volumeStorageKey]);
+  }, [audioVolumeByParticipant, sharedAudioVolumeByParticipant, loadedVolumeStorageKey, volumeStorageKey]);
 
   useEffect(() => {
     try {
@@ -2394,11 +2563,11 @@ function VoiceRoomContent({
   };
 
   const setParticipantAudioVolume = (participantId: string, volume: number) => {
-    const normalizedVolume = Math.max(0, Math.min(100, Math.round(volume)));
+    const normalizedVolume = normalizeParticipantVolume(volume);
 
     setAudioVolumeByParticipant((currentValue) => ({
       ...currentValue,
-      [participantId]: normalizedVolume,
+      [getVolumeParticipantKey(participantId)]: normalizedVolume,
     }));
 
     const participant = getRemoteParticipant(participantId);
@@ -2425,7 +2594,7 @@ function VoiceRoomContent({
     }
 
     const shouldListenToParticipant = (audioPreferenceByParticipant[participantId] ?? true) && !isSelfSilenced;
-    const sharedVolume = sharedAudioVolumeByParticipant[participantId] ?? 100;
+    const sharedVolume = sharedAudioVolumeByParticipant[getVolumeParticipantKey(participantId)] ?? 100;
 
     [...participant.audioTrackPublications.values()]
       .filter((publication) => publication.source === Track.Source.ScreenShareAudio)
@@ -2436,11 +2605,11 @@ function VoiceRoomContent({
   };
 
   const setParticipantSharedAudioVolume = (participantId: string, volume: number) => {
-    const normalizedVolume = Math.max(0, Math.min(100, Math.round(volume)));
+    const normalizedVolume = normalizeParticipantVolume(volume);
 
     setSharedAudioVolumeByParticipant((currentValue) => ({
       ...currentValue,
-      [participantId]: normalizedVolume,
+      [getVolumeParticipantKey(participantId)]: normalizedVolume,
     }));
 
     const participant = getRemoteParticipant(participantId);
@@ -2524,7 +2693,8 @@ function VoiceRoomContent({
     setWatchingState(participantId, isWatchingAny);
   };
 
-  const openFullscreen = async (participantId: string) => {
+  const openFullscreen = async (participantId: string, source?: "camera" | "screen" | "placeholder") => {
+    setFullscreenSource(source === "camera" ? Track.Source.Camera : source === "screen" ? Track.Source.ScreenShare : null);
     setHiddenTrackKeys((currentValue) => currentValue.filter((key) => !key.startsWith(`${participantId}:`)));
 
     if (participantId !== localIdentity) {
@@ -2725,8 +2895,9 @@ function VoiceRoomContent({
   const formatSoundDuration = (durationSeconds: number) => `${durationSeconds.toFixed(1)}s`;
 
   return (
-    <div ref={fullscreenRootRef} className="h-full flex flex-col bg-[#313338]">
-      {!isSelfSilenced && <RoomAudioRenderer />}
+    <div ref={fullscreenRootRef} className="h-full min-h-0 min-w-0 overflow-hidden flex flex-col bg-transparent">
+      {!isSelfSilenced && <VoiceAudioRenderer microphoneVolumes={audioVolumeByParticipant}
+        sharedVolumes={sharedAudioVolumeByParticipant} ready={loadedVolumeStorageKey === volumeStorageKey} />}
 
       {/* ── Participant video/avatar grid ── */}
       {/* Hide LiveKit's built-in participant info bar to avoid duplicate names */}
@@ -2739,27 +2910,63 @@ function VoiceRoomContent({
         .lk-participant-tile {
           background: transparent !important;
         }
+        .voice-stream-card .lk-participant-tile {
+          position: absolute !important;
+          inset: 0;
+          width: 100%;
+          height: 100%;
+          min-width: 0;
+          min-height: 0;
+          aspect-ratio: auto;
+        }
+        .voice-stream-card .lk-participant-tile video,
+        .voice-fullscreen .lk-participant-tile video {
+          position: absolute;
+          inset: 0;
+          min-width: 0;
+          min-height: 0;
+          max-width: 100%;
+          max-height: 100%;
+          object-position: center;
+        }
+        .voice-fullscreen .lk-participant-tile {
+          width: 100%;
+          height: 100%;
+          min-height: 0;
+          max-height: 100%;
+        }
         .lk-participant-tile video {
-          object-fit: cover !important;
+          object-fit: contain !important;
           width: 100% !important;
           height: 100% !important;
         }
       `}</style>
 
-      <main className="relative flex-1 min-h-0 overflow-y-auto p-2">
+      <main className={`neon-frame relative isolate flex-1 min-h-0 min-w-0 overflow-hidden mb-1 p-1.5 ${isMobile ? "mx-1.5 mt-1.5" : "mx-2 mt-1.5"}`}>
         {/* Video / screen share streams + audio-only avatars */}
         {(() => {
-          const activeStreamCards = stageCards.filter((c) => c.trackRef && isTrackRefActive(c.trackRef));
+          const allActiveStreamCards = stageCards.filter((c) => c.trackRef && isTrackRefActive(c.trackRef));
+          const focusedCard = allActiveStreamCards.find((card) => `${card.participantId}:${card.source}` === focusedStreamKey);
+          const activeStreamCards = focusedCard ? [focusedCard] : allActiveStreamCards;
           const audioOnlyCards = stageCards.filter((c) => !c.trackRef || !isTrackRefActive(c.trackRef));
           const hasActiveStreams = activeStreamCards.length > 0;
+          // Com uma única transmissão, a sobra fica nas laterais (vídeo 16:9 em área larga):
+          // os participantes só de áudio vão para uma coluna à direita em vez de roubar altura.
+          const audioAsSideColumn = !isMobile && hasActiveStreams && activeStreamCards.length === 1;
 
           return (
-            <div className="flex flex-col gap-1 h-full">
+            <div className={`flex gap-1.5 h-full min-h-0 min-w-0 ${audioAsSideColumn ? "flex-row" : "flex-col"}`}>
+              {focusedCard && (
+                <button type="button" onClick={() => setFocusedStreamKey(null)}
+                  className="absolute right-3 top-3 z-20 rounded-lg bg-black/60 px-3 py-1.5 text-xs text-white hover:bg-black/80 backdrop-blur">
+                  Voltar à grade
+                </button>
+              )}
               {/* Video grid */}
               {hasActiveStreams && (
                 <div
-                  className={`grid gap-1 ${activeStreamCards.length === 1 ? "grid-cols-1" : "grid-cols-1 md:grid-cols-2"}`}
-                  style={{ flex: "1 1 0%", minHeight: 0 }}
+                  className={`grid min-h-0 min-w-0 flex-1 gap-1 ${activeStreamCards.length === 1 ? "grid-cols-1" : "grid-cols-1 md:grid-cols-2"}`}
+                  style={{ gridAutoRows: "minmax(0, 1fr)" }}
                 >
                   {activeStreamCards.map((card) => {
                     const participantId = card.participantId;
@@ -2768,22 +2975,32 @@ function VoiceRoomContent({
                     return (
                       <div
                         key={`${participantId}-${card.source}`}
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`Ampliar ${card.source === "screen" ? "compartilhamento" : "câmera"} de ${name}`}
+                        onClick={() => setFocusedStreamKey(`${participantId}:${card.source}`)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            setFocusedStreamKey(`${participantId}:${card.source}`);
+                          }
+                        }}
                         onContextMenu={(event) => {
                           event.preventDefault();
                           setContextMenu({ participantId, source: card.source, x: event.clientX, y: event.clientY });
                         }}
-                        className={`relative rounded-lg overflow-hidden bg-[#2B2D31] ${
-                          speaking ? "ring-2 ring-emerald-400" : ""
+                        className={`voice-stream-card cursor-pointer relative min-h-0 min-w-0 rounded-xl overflow-hidden bg-[var(--tk-bg-deepest)] ${
+                          speaking ? "ring-2 ring-[var(--tk-green)] shadow-[0_0_18px_rgba(62,224,122,0.35)]" : ""
                         }`}
                       >
                         <div className="absolute inset-0">
                           <ParticipantTile trackRef={card.trackRef!} />
                         </div>
-                        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-3 py-1.5 z-10">
+                        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-[#07051a]/95 via-[#130e2e]/60 to-transparent px-4 pt-6 pb-2.5 z-10">
                           <div className="flex items-center gap-2">
-                            <span className="text-sm font-medium text-white truncate">{name}</span>
+                            <span className="text-[15px] font-bold text-white truncate">{name}</span>
                             {card.source === "screen" && (
-                              <span className="rounded bg-[#5865F2] px-1.5 py-0.5 text-[10px] text-white font-medium">Tela</span>
+                              <span className="rounded-md neon-active px-2 py-0.5 text-[10px] font-bold">AO VIVO · Tela</span>
                             )}
                             {!isParticipantMicEnabled(participantId) && (
                               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="text-red-400 shrink-0">
@@ -2809,9 +3026,21 @@ function VoiceRoomContent({
               )}
 
               {/* Audio-only participants as circles */}
-              {audioOnlyCards.length > 0 && (
-                <div className={`${hasActiveStreams ? "shrink-0 py-2" : "flex-1 flex items-center justify-center"}`}>
-                  <div className="flex flex-wrap justify-center gap-4 px-4">
+              {!focusedCard && audioOnlyCards.length > 0 && (
+                <div className={`${
+                  audioAsSideColumn
+                    ? "shrink-0 w-32 min-h-0 overflow-y-auto no-scrollbar py-1"
+                    : hasActiveStreams
+                      ? "shrink-0 min-w-0 py-1 overflow-x-auto no-scrollbar"
+                      : "flex-1 min-h-0 overflow-y-auto flex items-center justify-center"
+                }`}>
+                  <div className={`flex ${
+                    audioAsSideColumn
+                      ? "flex-col items-center gap-2"
+                      : hasActiveStreams
+                        ? "gap-3 px-2 w-max min-w-full justify-center"
+                        : "gap-4 px-4 flex-wrap justify-center"
+                  }`}>
                     {audioOnlyCards.map((card) => {
                       const participantId = card.participantId;
                       const name = getParticipantName(participantId);
@@ -2826,10 +3055,11 @@ function VoiceRoomContent({
                             event.preventDefault();
                             setContextMenu({ participantId, source: card.source, x: event.clientX, y: event.clientY });
                           }}
-                          className="flex flex-col items-center gap-1 cursor-default"
+                          data-speaking={speaking ? "true" : "false"}
+                          className={`neon-card flex flex-col items-center gap-1.5 cursor-default ${hasActiveStreams ? "w-28 px-2 pt-2.5 pb-2" : "w-36 px-3 pt-4 pb-3"}`}
                         >
                           <div className={`relative ${
-                            speaking ? "ring-[3px] ring-emerald-400 rounded-full" : ""
+                            speaking ? "ring-[3px] ring-[var(--tk-green)] rounded-full shadow-[0_0_14px_rgba(62,224,122,0.5)]" : ""
                           }`}>
                             {getAvatarUrl(participantId) ? (
                               // eslint-disable-next-line @next/next/no-img-element
@@ -2839,12 +3069,12 @@ function VoiceRoomContent({
                                 className={`${avatarSize} rounded-full object-cover`}
                               />
                             ) : (
-                              <div className={`${avatarSize} rounded-full bg-[#5865F2] flex items-center justify-center ${textSize} font-semibold text-white`}>
+                              <div className={`${avatarSize} rounded-full neon-active flex items-center justify-center ${textSize} font-bold`}>
                                 {getInitials(name)}
                               </div>
                             )}
                             {!micEnabled && (
-                              <div className="absolute -bottom-1 -right-1 rounded-full bg-[#1E1F22] p-[3px]">
+                              <div className="absolute -bottom-1 -right-1 rounded-full bg-[var(--tk-bg-deep)] p-[3px]">
                                 <div className="rounded-full bg-[#ED4245] p-[3px] flex items-center justify-center">
                                   <svg width={hasActiveStreams ? "12" : "14"} height={hasActiveStreams ? "12" : "14"} viewBox="0 0 24 24" fill="none" className="text-white">
                                     <path d="M1 1l22 22M9 9v3a3 3 0 005.12 2.12M15 9.34V4a3 3 0 00-5.94-.6" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
@@ -2854,7 +3084,7 @@ function VoiceRoomContent({
                               </div>
                             )}
                             {!isParticipantListening(participantId) && (
-                              <div className="absolute -bottom-1 -left-1 rounded-full bg-[#1E1F22] p-[3px]">
+                              <div className="absolute -bottom-1 -left-1 rounded-full bg-[var(--tk-bg-deep)] p-[3px]">
                                 <div className="rounded-full bg-[#ED4245] p-[3px] flex items-center justify-center">
                                   <svg width={hasActiveStreams ? "12" : "14"} height={hasActiveStreams ? "12" : "14"} viewBox="0 0 24 24" fill="none" className="text-white">
                                     <path d="M3 14h3a2 2 0 012 2v3a2 2 0 01-2 2H5a2 2 0 01-2-2v-7a9 9 0 0118 0v7a2 2 0 01-2 2h-1a2 2 0 01-2-2v-3a2 2 0 012-2h3" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
@@ -2864,7 +3094,7 @@ function VoiceRoomContent({
                               </div>
                             )}
                           </div>
-                          <span className={`${hasActiveStreams ? "text-[10px]" : "text-xs"} text-zinc-200 max-w-[80px] truncate`} title={name}>{name}</span>
+                          <span className={`${hasActiveStreams ? "text-[10px]" : "text-xs"} font-semibold text-white max-w-full truncate`} title={name}>{name}</span>
                           {soundPlayingByParticipantId[participantId] && (
                             <span className="text-[10px] text-blue-300 truncate max-w-[80px]">🔊 {soundPlayingByParticipantId[participantId].soundName}</span>
                           )}
@@ -2880,8 +3110,8 @@ function VoiceRoomContent({
       </main>
 
       {/* ── Bottom control bar (Discord-style) ── */}
-      <div className="shrink-0 bg-[#1E1F22] border-t border-zinc-800 px-4 py-3">
-        <div className="flex items-center justify-center gap-2">
+      <div className={`neon-controlbar relative z-30 shrink-0 py-2 ${isMobile ? "px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]" : "px-4"}`}>
+        <div className={`flex items-center justify-center ${isMobile ? "flex-wrap gap-2" : "gap-3"}`}>
           {/* Mic toggle - handled by ControlBar but we overlay custom icons */}
           <ControlBar
             variation="minimal"
@@ -2894,16 +3124,23 @@ function VoiceRoomContent({
               settings: false,
             }}
           />
-          <TrackToggle
-            source={Track.Source.Camera}
-            captureOptions={CAMERA_CAPTURE_OPTIONS}
-            title="Ativar/desativar câmera (60 FPS)"
-          />
+          <div className="flex items-center">
+            <TrackToggle
+              source={Track.Source.Camera}
+              captureOptions={CAMERA_CAPTURE_OPTIONS}
+              title="Ativar/desativar câmera (60 FPS)"
+            />
+            <CameraDeviceControl currentUserId={currentUserId} />
+          </div>
+          {/* Celulares não suportam compartilhar tela pelo navegador */}
+          {!isMobile && (
           <TrackToggle
             source={Track.Source.ScreenShare}
             captureOptions={screenShareCaptureOptions}
+            publishOptions={SHARED_AUDIO_PUBLISH_OPTIONS}
             title="Ativar/desativar transmissão (60 FPS)"
           />
+          )}
 
           {/* Soundboard button */}
           {serverId && (
@@ -2911,11 +3148,8 @@ function VoiceRoomContent({
               <button
                 type="button"
                 onClick={() => setShowSoundboardPopup((v) => !v)}
-                className={`flex items-center justify-center w-10 h-10 rounded-full transition-colors ${
-                  showSoundboardPopup
-                    ? "bg-[#5865F2] text-white"
-                    : "bg-[#2B2D31] text-[#B5BAC1] hover:text-white hover:bg-[#383A40]"
-                }`}
+                data-active={showSoundboardPopup ? "true" : "false"}
+                className="neon-btn flex items-center justify-center"
                 title="Soundboard"
               >
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
@@ -2926,14 +3160,12 @@ function VoiceRoomContent({
           )}
 
           {/* Audio-only share */}
+          {(!isMobile || isAudioOnlySharing) && (
           <button
             type="button"
             onClick={() => (isAudioOnlySharing ? stopAudioOnlyShare() : void startAudioOnlyShare())}
-            className={`flex items-center justify-center w-10 h-10 rounded-full transition-colors ${
-              isAudioOnlySharing
-                ? "bg-emerald-600 text-white"
-                : "bg-[#2B2D31] text-[#B5BAC1] hover:text-white hover:bg-[#383A40]"
-            }`}
+            data-active={isAudioOnlySharing ? "true" : "false"}
+            className="neon-btn flex items-center justify-center"
             title={isAudioOnlySharing ? "Parar áudio compartilhado" : "Compartilhar somente áudio"}
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -2942,16 +3174,14 @@ function VoiceRoomContent({
               <circle cx="18" cy="16" r="3"/>
             </svg>
           </button>
+          )}
 
           {/* Advanced options */}
           <button
             type="button"
             onClick={() => setShowAdvancedOptions((v) => !v)}
-            className={`flex items-center justify-center w-10 h-10 rounded-full transition-colors ${
-              showAdvancedOptions
-                ? "bg-[#5865F2] text-white"
-                : "bg-[#2B2D31] text-[#B5BAC1] hover:text-white hover:bg-[#383A40]"
-            }`}
+            data-active={showAdvancedOptions ? "true" : "false"}
+            className="neon-btn flex items-center justify-center"
             title="Opções avançadas"
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -2964,7 +3194,7 @@ function VoiceRoomContent({
           <button
             type="button"
             onClick={() => room.disconnect()}
-            className="flex items-center justify-center w-10 h-10 rounded-full bg-[#ED4245] text-white hover:bg-red-600 transition-colors ml-2"
+            className="neon-btn-danger flex items-center justify-center ml-3"
             title="Desconectar"
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
@@ -3001,7 +3231,7 @@ function VoiceRoomContent({
       {showAdvancedOptions && (
         <>
           <button type="button" aria-label="Fechar" className="fixed inset-0 z-[59]" onClick={() => setShowAdvancedOptions(false)} />
-          <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-[60] w-80 rounded-xl border border-zinc-700 bg-[#2B2D31] shadow-2xl p-4 space-y-3">
+          <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-[60] w-80 rounded-xl border border-zinc-700 bg-[var(--tk-bg-panel)] shadow-2xl p-4 space-y-3">
             <div className="flex items-center justify-between">
               <p className="text-sm font-medium text-zinc-100">Opções avançadas</p>
               <button type="button" onClick={() => setShowAdvancedOptions(false)} className="text-zinc-400 hover:text-zinc-200">
@@ -3041,7 +3271,7 @@ function VoiceRoomContent({
                 step={5}
                 value={soundEffectsVolume}
                 onChange={(event) => setSoundEffectsVolume(Number(event.target.value))}
-                className="w-full accent-[#5865F2]"
+                className="w-full accent-[var(--tk-accent)]"
               />
             </div>
           </div>
@@ -3052,7 +3282,7 @@ function VoiceRoomContent({
       {showSoundboardPopup && (
         <>
           <button type="button" aria-label="Fechar soundboard" className="fixed inset-0 z-[59]" onClick={() => setShowSoundboardPopup(false)} />
-          <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-[60] w-[420px] max-w-[calc(100vw-2rem)] rounded-xl border border-zinc-700 bg-[#2B2D31] shadow-2xl overflow-hidden">
+          <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-[60] w-[420px] max-w-[calc(100vw-2rem)] rounded-xl border border-zinc-700 bg-[var(--tk-bg-panel)] shadow-2xl overflow-hidden">
             {/* Soundboard header */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-700">
               <div className="flex items-center gap-3">
@@ -3062,7 +3292,7 @@ function VoiceRoomContent({
                     type="button"
                     onClick={() => setShowOnlyFavoriteSounds(false)}
                     className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
-                      !showOnlyFavoriteSounds ? "bg-[#5865F2] text-white" : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700"
+                      !showOnlyFavoriteSounds ? "bg-[var(--tk-accent)] text-white" : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700"
                     }`}
                   >
                     Todos
@@ -3071,7 +3301,7 @@ function VoiceRoomContent({
                     type="button"
                     onClick={() => setShowOnlyFavoriteSounds(true)}
                     className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
-                      showOnlyFavoriteSounds ? "bg-[#5865F2] text-white" : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700"
+                      showOnlyFavoriteSounds ? "bg-[var(--tk-accent)] text-white" : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700"
                     }`}
                   >
                     ★ Favoritos
@@ -3083,7 +3313,7 @@ function VoiceRoomContent({
                   <button
                     type="button"
                     onClick={() => { setShowSoundUploadModal(true); setShowSoundboardPopup(false); }}
-                    className="rounded-md bg-[#5865F2] hover:bg-indigo-500 px-2.5 py-1 text-[11px] font-medium text-white transition-colors"
+                    className="rounded-md bg-[var(--tk-accent)] hover:bg-indigo-500 px-2.5 py-1 text-[11px] font-medium text-white transition-colors"
                   >
                     + Enviar som
                   </button>
@@ -3157,7 +3387,7 @@ function VoiceRoomContent({
                               className={`group relative rounded-md px-2 py-1.5 text-left transition-colors disabled:opacity-60 ${
                                 isPlaying
                                   ? "bg-emerald-600/20 border border-emerald-500/40"
-                                  : "bg-[#383A40] hover:bg-[#43454D] border border-transparent"
+                                  : "bg-[var(--tk-bg-elev)] hover:bg-[var(--tk-bg-active)] border border-transparent"
                               }`}
                               title={`${sound.name} · ${formatSoundDuration(sound.durationSeconds)} · por ${sound.createdByName}`}
                             >
@@ -3222,7 +3452,7 @@ function VoiceRoomContent({
       {/* ── Sound upload modal ── */}
       {showSoundUploadModal && (
         <div className="fixed inset-0 z-[85] flex items-center justify-center bg-black/70 p-4">
-          <div className="w-full max-w-md rounded-xl border border-zinc-700 bg-[#2B2D31] p-5 space-y-4">
+          <div className="w-full max-w-md rounded-xl border border-zinc-700 bg-[var(--tk-bg-panel)] p-5 space-y-4">
             <div className="flex items-center justify-between">
               <p className="text-base font-semibold text-zinc-100">Enviar novo som</p>
               <button
@@ -3245,7 +3475,7 @@ function VoiceRoomContent({
                     setSoundboardError(null);
                     setNewSoundFile(event.target.files?.[0] ?? null);
                   }}
-                  className="block w-full text-xs text-zinc-300 file:mr-2 file:rounded-md file:border-0 file:bg-[#5865F2] file:px-3 file:py-1.5 file:text-white file:font-medium file:cursor-pointer"
+                  className="block w-full text-xs text-zinc-300 file:mr-2 file:rounded-md file:border-0 file:bg-[var(--tk-accent)] file:px-3 file:py-1.5 file:text-white file:font-medium file:cursor-pointer"
                 />
                 {isAnalyzingSoundFile && (
                   <p className="text-[11px] text-zinc-500 mt-1">Analisando...</p>
@@ -3258,7 +3488,7 @@ function VoiceRoomContent({
               </div>
 
               {!isAnalyzingSoundFile && (newSoundOriginalDuration ?? 0) > 1 && (
-                <div className="rounded-lg bg-[#1E1F22] p-3 space-y-2">
+                <div className="rounded-lg bg-[var(--tk-bg-deep)] p-3 space-y-2">
                   <p className="text-[11px] text-zinc-300 font-medium">Recortar trecho</p>
                   <div className="space-y-1">
                     <div className="flex items-center justify-between">
@@ -3272,7 +3502,7 @@ function VoiceRoomContent({
                       step={0.1}
                       value={newSoundTrimDurationSeconds}
                       onChange={(event) => setNewSoundTrimDurationSeconds(Number(event.target.value))}
-                      className="w-full accent-[#5865F2]"
+                      className="w-full accent-[var(--tk-accent)]"
                     />
                   </div>
                   <div className="space-y-1">
@@ -3287,7 +3517,7 @@ function VoiceRoomContent({
                       step={0.1}
                       value={newSoundTrimStartSeconds}
                       onChange={(event) => setNewSoundTrimStartSeconds(Number(event.target.value))}
-                      className="w-full accent-[#5865F2]"
+                      className="w-full accent-[var(--tk-accent)]"
                     />
                   </div>
                   <div className="flex gap-2">
@@ -3295,7 +3525,7 @@ function VoiceRoomContent({
                       type="button"
                       onClick={() => void playTrimPreview()}
                       disabled={!newSoundFile || isAnalyzingSoundFile || isSoundboardBusy || isPlayingTrimPreview}
-                      className="flex-1 rounded-md bg-[#383A40] hover:bg-[#43454D] px-2 py-1.5 text-xs text-zinc-200 disabled:opacity-50"
+                      className="flex-1 rounded-md bg-[var(--tk-bg-elev)] hover:bg-[var(--tk-bg-active)] px-2 py-1.5 text-xs text-zinc-200 disabled:opacity-50"
                     >
                       {isPlayingTrimPreview ? "Reproduzindo..." : "▶ Ouvir trecho"}
                     </button>
@@ -3303,7 +3533,7 @@ function VoiceRoomContent({
                       type="button"
                       onClick={stopTrimPreview}
                       disabled={!isPlayingTrimPreview}
-                      className="rounded-md bg-[#383A40] hover:bg-[#43454D] px-2 py-1.5 text-xs text-zinc-200 disabled:opacity-50"
+                      className="rounded-md bg-[var(--tk-bg-elev)] hover:bg-[var(--tk-bg-active)] px-2 py-1.5 text-xs text-zinc-200 disabled:opacity-50"
                     >
                       ■ Parar
                     </button>
@@ -3325,7 +3555,7 @@ function VoiceRoomContent({
                       return file ? URL.createObjectURL(file) : null;
                     });
                   }}
-                  className="block w-full text-xs text-zinc-300 file:mr-2 file:rounded-md file:border-0 file:bg-[#383A40] file:px-3 file:py-1.5 file:text-zinc-200 file:cursor-pointer"
+                  className="block w-full text-xs text-zinc-300 file:mr-2 file:rounded-md file:border-0 file:bg-[var(--tk-bg-elev)] file:px-3 file:py-1.5 file:text-zinc-200 file:cursor-pointer"
                 />
                 {newSoundGifPreviewUrl && (
                   <div className="flex items-center gap-2 mt-2">
@@ -3349,7 +3579,7 @@ function VoiceRoomContent({
                 value={newSoundName}
                 onChange={(event) => setNewSoundName(event.target.value)}
                 placeholder="Nome do som (opcional)"
-                className="w-full rounded-md bg-[#1E1F22] border border-zinc-700 px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-500 focus:border-[#5865F2] focus:outline-none"
+                className="w-full rounded-md bg-[var(--tk-bg-deep)] border border-zinc-700 px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-500 focus:border-[var(--tk-accent)] focus:outline-none"
               />
 
               {soundboardError && (
@@ -3360,7 +3590,7 @@ function VoiceRoomContent({
                 type="button"
                 onClick={() => { void uploadServerSound(); }}
                 disabled={isSoundboardBusy || isAnalyzingSoundFile || !newSoundFile || !serverId || !canUploadServerSounds}
-                className="w-full rounded-md bg-[#5865F2] hover:bg-indigo-500 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 transition-colors"
+                className="w-full rounded-md bg-[var(--tk-accent)] hover:bg-indigo-500 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 transition-colors"
               >
                 {(newSoundOriginalDuration ?? 0) > 1 ? "Enviar trecho" : "Enviar som"}
               </button>
@@ -3377,20 +3607,20 @@ function VoiceRoomContent({
         const fsParticipantId = fullscreenTrack.participant.identity;
         const fsName = getParticipantName(fsParticipantId);
         return (
-          <div className="fixed inset-0 z-50 bg-black p-2">
+          <div className="voice-fullscreen fixed inset-0 z-50 bg-black p-2">
             <div className={`h-full w-full rounded-lg overflow-hidden relative ${
               fullscreenTrack.participant.isSpeaking ? "ring-2 ring-emerald-400" : ""
             }`}>
               {isTrackRefActive(fullscreenTrack) ? (
                 <ParticipantTile trackRef={fullscreenTrack} />
               ) : (
-                <div className="h-full w-full bg-[#2B2D31] flex items-center justify-center">
+                <div className="h-full w-full bg-[var(--tk-bg-panel)] flex items-center justify-center">
                   <div className="flex flex-col items-center gap-3">
                     {getAvatarUrl(fsParticipantId) ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={getAvatarUrl(fsParticipantId)!} alt={fsName} className="h-32 w-32 rounded-full object-cover" />
                     ) : (
-                      <div className="h-32 w-32 rounded-full bg-[#5865F2] flex items-center justify-center text-5xl font-semibold text-white">
+                      <div className="h-32 w-32 rounded-full bg-[var(--tk-accent)] flex items-center justify-center text-5xl font-semibold text-white">
                         {getInitials(fsName)}
                       </div>
                     )}
@@ -3416,13 +3646,13 @@ function VoiceRoomContent({
         const isRemote = participantId !== localIdentity;
         const audioMuted = isRemote ? isAudioMutedLocally(participantId) : false;
         const canShowVideo = isRemote ? isParticipantVideoVisible(participantId) : false;
-        const volume = audioVolumeByParticipant[participantId] ?? 100;
+        const volume = audioVolumeByParticipant[getVolumeParticipantKey(participantId)] ?? 100;
         const hasSharedAudio = isRemote ? hasParticipantSharedAudio(participantId) : false;
         const sharedAudioListeningPreference = sharedAudioPreferenceByParticipant[participantId];
         const sharedAudioListening = typeof sharedAudioListeningPreference === "boolean"
           ? sharedAudioListeningPreference
           : watchedParticipantIds.includes(participantId);
-        const sharedAudioVolume = sharedAudioVolumeByParticipant[participantId] ?? 100;
+        const sharedAudioVolume = sharedAudioVolumeByParticipant[getVolumeParticipantKey(participantId)] ?? 100;
         const targetUserId = getBaseUserId(participantId);
         const isSoundEffectsMutedFromUser = !!mutedSoundEffectsByUserId[targetUserId];
         const canModerateTarget =
@@ -3437,7 +3667,7 @@ function VoiceRoomContent({
           <>
             <button type="button" aria-label="Fechar menu" className="fixed inset-0 z-[69] cursor-default" onClick={() => setContextMenu(null)} />
             <div
-              className="fixed z-[70] min-w-[240px] rounded-lg border border-zinc-700 bg-[#111214] p-1.5 shadow-2xl"
+              className="fixed z-[70] min-w-[240px] rounded-lg border border-zinc-700 bg-[var(--tk-bg-deepest)] p-1.5 shadow-2xl"
               style={{
                 left: Math.min(contextMenu.x, typeof window !== "undefined" ? window.innerWidth - 260 : contextMenu.x),
                 ...(contextMenu.y > (typeof window !== "undefined" ? window.innerHeight * 0.5 : 400)
@@ -3452,7 +3682,7 @@ function VoiceRoomContent({
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={getAvatarUrl(participantId)!} alt={ctxName} className="h-8 w-8 rounded-full object-cover" />
                 ) : (
-                  <div className="h-8 w-8 rounded-full bg-[#5865F2] flex items-center justify-center text-xs font-semibold text-white">
+                  <div className="h-8 w-8 rounded-full bg-[var(--tk-accent)] flex items-center justify-center text-xs font-semibold text-white">
                     {getInitials(ctxName)}
                   </div>
                 )}
@@ -3464,7 +3694,7 @@ function VoiceRoomContent({
               {isRemote && (
                 <button
                   type="button"
-                  className="w-full flex items-center gap-2 px-2 py-1.5 text-sm text-zinc-300 hover:bg-[#5865F2] hover:text-white rounded transition-colors"
+                  className="w-full flex items-center gap-2 px-2 py-1.5 text-sm text-zinc-300 hover:bg-[var(--tk-accent)] hover:text-white rounded transition-colors"
                   onClick={() => setAudioListening(participantId, audioMuted)}
                 >
                   {audioMuted ? "Ativar áudio" : "Silenciar áudio"}
@@ -3474,7 +3704,7 @@ function VoiceRoomContent({
               {isRemote && (
                 <button
                   type="button"
-                  className="w-full flex items-center gap-2 px-2 py-1.5 text-sm text-zinc-300 hover:bg-[#5865F2] hover:text-white rounded transition-colors"
+                  className="w-full flex items-center gap-2 px-2 py-1.5 text-sm text-zinc-300 hover:bg-[var(--tk-accent)] hover:text-white rounded transition-colors"
                   onClick={() =>
                     setMutedSoundEffectsByUserId((currentValue) => ({
                       ...currentValue,
@@ -3490,16 +3720,20 @@ function VoiceRoomContent({
                 <div className="px-2 py-1.5">
                   <div className="flex items-center justify-between mb-1">
                     <p className="text-[11px] text-zinc-500">Volume</p>
-                    <p className="text-[11px] text-zinc-400">{volume}%</p>
+                    <label className="flex items-center gap-1 text-[11px] text-zinc-400">
+                      <input type="number" aria-label="Volume do usuário em porcentagem" min={0} max={100} step={0.1}
+                        value={volume} onChange={(event) => setParticipantAudioVolume(participantId, Number(event.target.value))}
+                        className="w-16 rounded bg-zinc-800 px-1 py-0.5 text-right text-white" />%
+                    </label>
                   </div>
                   <input
                     type="range"
                     min={0}
                     max={100}
-                    step={5}
+                    step={0.1}
                     value={volume}
                     onChange={(event) => setParticipantAudioVolume(participantId, Number(event.target.value))}
-                    className="w-full accent-[#5865F2]"
+                    className="w-full accent-[var(--tk-accent)]"
                   />
                 </div>
               )}
@@ -3508,7 +3742,7 @@ function VoiceRoomContent({
                 <>
                   <button
                     type="button"
-                    className="w-full flex items-center gap-2 px-2 py-1.5 text-sm text-zinc-300 hover:bg-[#5865F2] hover:text-white rounded transition-colors"
+                    className="w-full flex items-center gap-2 px-2 py-1.5 text-sm text-zinc-300 hover:bg-[var(--tk-accent)] hover:text-white rounded transition-colors"
                     onClick={() => setSharedAudioListening(participantId, !sharedAudioListening)}
                   >
                     {sharedAudioListening ? "Parar áudio compartilhado" : "Ouvir áudio compartilhado"}
@@ -3516,16 +3750,20 @@ function VoiceRoomContent({
                   <div className="px-2 py-1.5">
                     <div className="flex items-center justify-between mb-1">
                       <p className="text-[11px] text-zinc-500">Volume transmissão</p>
-                      <p className="text-[11px] text-zinc-400">{sharedAudioVolume}%</p>
+                      <label className="flex items-center gap-1 text-[11px] text-zinc-400">
+                        <input type="number" aria-label="Volume da transmissão em porcentagem" min={0} max={100} step={0.1}
+                          value={sharedAudioVolume} onChange={(event) => setParticipantSharedAudioVolume(participantId, Number(event.target.value))}
+                          className="w-16 rounded bg-zinc-800 px-1 py-0.5 text-right text-white" />%
+                      </label>
                     </div>
                     <input
                       type="range"
                       min={0}
                       max={100}
-                      step={5}
+                      step={0.1}
                       value={sharedAudioVolume}
                       onChange={(event) => setParticipantSharedAudioVolume(participantId, Number(event.target.value))}
-                      className="w-full accent-[#5865F2]"
+                      className="w-full accent-[var(--tk-accent)]"
                     />
                   </div>
                 </>
@@ -3534,7 +3772,7 @@ function VoiceRoomContent({
               {isRemote && (
                 <button
                   type="button"
-                  className="w-full flex items-center gap-2 px-2 py-1.5 text-sm text-zinc-300 hover:bg-[#5865F2] hover:text-white rounded transition-colors"
+                  className="w-full flex items-center gap-2 px-2 py-1.5 text-sm text-zinc-300 hover:bg-[var(--tk-accent)] hover:text-white rounded transition-colors"
                   onClick={() => {
                     setParticipantVideoVisible(participantId, !canShowVideo);
                     if (canShowVideo) {
@@ -3550,9 +3788,9 @@ function VoiceRoomContent({
 
               <button
                 type="button"
-                className="w-full flex items-center gap-2 px-2 py-1.5 text-sm text-zinc-300 hover:bg-[#5865F2] hover:text-white rounded transition-colors"
+                className="w-full flex items-center gap-2 px-2 py-1.5 text-sm text-zinc-300 hover:bg-[var(--tk-accent)] hover:text-white rounded transition-colors"
                 onClick={() => {
-                  void openFullscreen(participantId);
+                  void openFullscreen(participantId, contextMenu.source);
                   setContextMenu(null);
                 }}
               >
@@ -3582,7 +3820,7 @@ function VoiceRoomContent({
                         <button
                           key={channel.id}
                           type="button"
-                          className="w-full flex items-center gap-2 px-2 py-1 text-sm text-zinc-300 hover:bg-[#5865F2] hover:text-white rounded transition-colors"
+                          className="w-full flex items-center gap-2 px-2 py-1 text-sm text-zinc-300 hover:bg-[var(--tk-accent)] hover:text-white rounded transition-colors"
                           onClick={() => {
                             void onModerationAction?.({ action: "voice-move", targetUserId, targetChannelId: channel.id });
                             setContextMenu(null);
@@ -3614,7 +3852,7 @@ function VoiceRoomContent({
       {/* ── GIF editing modal ── */}
       {gifEditingSoundId && (
         <div className="fixed inset-0 z-[85] flex items-center justify-center bg-black/70 p-4">
-          <div className="w-full max-w-sm rounded-xl border border-zinc-700 bg-[#2B2D31] p-4 space-y-3">
+          <div className="w-full max-w-sm rounded-xl border border-zinc-700 bg-[var(--tk-bg-panel)] p-4 space-y-3">
             <div className="flex items-center justify-between gap-2">
               <p className="text-sm font-semibold text-zinc-100">Imagem/GIF do som</p>
               <button
@@ -3635,7 +3873,7 @@ function VoiceRoomContent({
             <p className="truncate text-xs text-zinc-400">Som: {gifEditingSoundName}</p>
 
             {gifEditingSoundGifPreviewUrl && (
-              <div className="rounded-lg bg-[#1E1F22] p-3">
+              <div className="rounded-lg bg-[var(--tk-bg-deep)] p-3">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={gifEditingSoundGifPreviewUrl} alt="GIF" className="mx-auto max-h-40 rounded object-contain" />
               </div>
@@ -3652,7 +3890,7 @@ function VoiceRoomContent({
                   return file ? URL.createObjectURL(file) : currentValue;
                 });
               }}
-              className="block w-full text-xs text-zinc-300 file:mr-2 file:rounded-md file:border-0 file:bg-[#5865F2] file:px-3 file:py-1.5 file:text-white file:cursor-pointer"
+              className="block w-full text-xs text-zinc-300 file:mr-2 file:rounded-md file:border-0 file:bg-[var(--tk-accent)] file:px-3 file:py-1.5 file:text-white file:cursor-pointer"
             />
 
             <div className="flex items-center gap-2">
@@ -3660,7 +3898,7 @@ function VoiceRoomContent({
                 type="button"
                 onClick={() => void updateSoundGif("set")}
                 disabled={isSoundboardBusy || !gifEditingSoundGifFile}
-                className="flex-1 rounded-md bg-[#5865F2] hover:bg-indigo-500 px-2 py-1.5 text-sm text-white disabled:opacity-50"
+                className="flex-1 rounded-md bg-[var(--tk-accent)] hover:bg-indigo-500 px-2 py-1.5 text-sm text-white disabled:opacity-50"
               >
                 Salvar GIF
               </button>

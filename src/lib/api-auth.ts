@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { getAuthCookieName, readUserIdFromAuthToken } from "@/lib/auth";
 import { Server, ChatMessage, DirectChatMessage } from "@/lib/types";
+import { touchUserLastSeen } from "@/lib/last-seen";
 
 export class ApiAuthError extends Error {
   status: number;
@@ -21,6 +22,7 @@ export const requireAuthenticatedUserId = (request: NextRequest): string => {
     throw new ApiAuthError("Sessão inválida ou expirada.", 401);
   }
 
+  touchUserLastSeen(authenticatedUserId);
   return authenticatedUserId;
 };
 
@@ -84,6 +86,7 @@ export const sanitizeServerForApi = (server: Server) => ({
     createdAt: m.createdAt,
     userName: m.userName,
     avatarUrl: m.avatarUrl,
+    lastSeenAt: m.lastSeenAt ?? null,
     permissions: m.permissions,
     notifySoundEnabled: m.notifySoundEnabled,
   })),

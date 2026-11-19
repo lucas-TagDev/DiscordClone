@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getSafeUploadExtension } from "@/lib/upload-safety";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
@@ -55,7 +56,7 @@ const saveSoundGifFile = async (file: File): Promise<string> => {
     .replace(/[\\/:*?"<>|]/g, "-")
     .replace(/\s+/g, "-")
     .slice(0, 100) || "gif";
-  const finalFileName = `${Date.now()}-${crypto.randomUUID()}-${safeBaseName}${extension}`;
+  const finalFileName = `${Date.now()}-${crypto.randomUUID()}-${safeBaseName}${getSafeUploadExtension(extension)}`;
 
   const uploadsDir = path.join(process.cwd(), "public", "uploads", "soundboard-gifs");
   await mkdir(uploadsDir, { recursive: true });

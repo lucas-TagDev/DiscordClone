@@ -1,4 +1,5 @@
 import { Readable } from "node:stream";
+import { getSafeUploadExtension } from "@/lib/upload-safety";
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -112,7 +113,7 @@ export async function saveParsedFile(
     .replace(/[\\/:*?"<>|]/g, "-")
     .replace(/\s+/g, "-")
     .slice(0, 120) || "arquivo";
-  const finalFileName = `${Date.now()}-${randomUUID()}-${safeBaseName}${extension}`;
+  const finalFileName = `${Date.now()}-${randomUUID()}-${safeBaseName}${getSafeUploadExtension(extension)}`;
   const finalPath = path.join(uploadsDir, finalFileName);
 
   await writeFile(finalPath, file.buffer);

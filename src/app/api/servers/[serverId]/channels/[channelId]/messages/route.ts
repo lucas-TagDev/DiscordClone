@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getSafeUploadExtension } from "@/lib/upload-safety";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
@@ -8,7 +9,7 @@ import { createMessage, listMessagesPage } from "@/lib/store";
 import type { ChatMessage } from "@/lib/types";
 
 // Limites configuráveis via .env
-const MAX_MESSAGE_LENGTH = Number(process.env.NEXT_PUBLIC_MAX_MESSAGE_LENGTH ?? "2000");
+const MAX_MESSAGE_LENGTH = 50_000;
 const DEFAULT_MAX_FILE_SIZE = (Number(process.env.CHANNEL_UPLOAD_MAX_FILE_SIZE_MB ?? "50")) * 1024 * 1024;
 
 const createMessageSchema = z.object({
@@ -51,7 +52,7 @@ const saveUploadedFile = async (file: File): Promise<{ name: string; url: string
   const extension = path.extname(file.name);
   const baseName = path.basename(file.name, extension);
   const safeBaseName = sanitizeFileName(baseName);
-  const finalFileName = `${Date.now()}-${crypto.randomUUID()}-${safeBaseName}${extension}`;
+  const finalFileName = `${Date.now()}-${crypto.randomUUID()}-${safeBaseName}${getSafeUploadExtension(extension)}`;
   const finalPath = path.join(uploadsDir, finalFileName);
 
   const fileBuffer = Buffer.from(await file.arrayBuffer());
@@ -103,6 +104,10 @@ export async function GET(request: NextRequest, { params }: Params) {
       limit,
       beforeCreatedAt,
       beforeId,
+      aroundId: z.string().max(100).optional().parse(request.nextUrl.searchParams.get("aroundId") ?? undefined),
+      search: z.string().max(200).parse(request.nextUrl.searchParams.get("search") ?? ""),
+      author: z.string().max(100).parse(request.nextUrl.searchParams.get("author") ?? ""),
+      kind: z.enum(["all", "media", "links", "files"]).parse(request.nextUrl.searchParams.get("kind") ?? "all"),
     });
     return NextResponse.json(page);
   } catch (error) {
@@ -125,7 +130,7 @@ export async function POST(request: NextRequest, { params }: Params) {
       const userId = z.string().min(2).parse(formData.get("userId")?.toString());
       const userName = z.string().min(1).max(40).parse(formData.get("userName")?.toString());
       ensureSameAuthenticatedUser(authenticatedUserId, userId);
-      const content = z.string().max(2000).parse(formData.get("content")?.toString() ?? "");
+      const content = z.string().max(MAX_MESSAGE_LENGTH).parse(formData.get("content")?.toString() ?? "");
       const files = formData
         .getAll("files")
         .filter((entry): entry is File => entry instanceof File && entry.name.length > 0);

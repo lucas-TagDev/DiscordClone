@@ -21,6 +21,8 @@ export async function GET(request: NextRequest) {
           OR: [
             { username: { contains: searchTerm, mode: Prisma.QueryMode.insensitive } },
             { displayName: { contains: searchTerm, mode: Prisma.QueryMode.insensitive } },
+            { registrationIp: { contains: searchTerm } },
+            { lastLoginIp: { contains: searchTerm } },
           ],
         }
       : {};
@@ -38,6 +40,9 @@ export async function GET(request: NextRequest) {
           isAdmin: true,
           createdAt: true,
           updatedAt: true,
+          registrationIp: true,
+          lastLoginIp: true,
+          lastLoginAt: true,
         },
         orderBy: { createdAt: "desc" },
       }),

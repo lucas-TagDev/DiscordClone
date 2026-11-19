@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getSafeUploadExtension } from "@/lib/upload-safety";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
@@ -36,7 +37,7 @@ const saveServerAvatarFile = async (file: File): Promise<string> => {
   const extension = path.extname(file.name) || ".img";
   const baseName = path.basename(file.name, extension);
   const safeBaseName = sanitizeFileName(baseName);
-  const finalFileName = `${Date.now()}-${crypto.randomUUID()}-${safeBaseName}${extension}`;
+  const finalFileName = `${Date.now()}-${crypto.randomUUID()}-${safeBaseName}${getSafeUploadExtension(extension)}`;
   const finalPath = path.join(avatarsDir, finalFileName);
 
   const fileBuffer = Buffer.from(await file.arrayBuffer());
