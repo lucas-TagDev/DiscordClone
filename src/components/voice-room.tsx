@@ -307,6 +307,10 @@ type VoiceRoomProps = {
   serverUrl: string;
   serverId?: string | null;
   joinWithMicEnabled?: boolean;
+  /** Entrar já ensurdecido (ex.: ao ser movido de canal estando ensurdecido) */
+  joinDeafened?: boolean;
+  /** Estado do microfone antes de ensurdecer, para restaurar ao "desensurdecer" */
+  joinMicBeforeDeafen?: boolean | null;
   joinWithCameraEnabled?: boolean;
   noiseSuppressionEnabled?: boolean;
   noiseSuppressionMode?: "rnnoise" | "deepfilter";
@@ -327,6 +331,7 @@ type VoiceRoomProps = {
   onPresenceStatusChanged?: () => void;
   onListeningStateChanged?: (stateByUserId: Record<string, boolean>) => void;
   onMicrophoneStateChanged?: (enabled: boolean) => void;
+  onDeafenStateChanged?: (deafened: boolean, micBeforeDeafen: boolean | null) => void;
   onLeave: (disconnectedToken: string) => void;
 };
 
@@ -335,6 +340,8 @@ export function VoiceRoom({
   serverUrl,
   serverId = null,
   joinWithMicEnabled = true,
+  joinDeafened = false,
+  joinMicBeforeDeafen = null,
   joinWithCameraEnabled = false,
   noiseSuppressionEnabled = true,
   noiseSuppressionMode = "rnnoise",
@@ -351,6 +358,7 @@ export function VoiceRoom({
   onPresenceStatusChanged,
   onListeningStateChanged,
   onMicrophoneStateChanged,
+  onDeafenStateChanged,
   onLeave,
 }: VoiceRoomProps) {
   const micCaptureOptions = useMemo(
@@ -378,7 +386,7 @@ export function VoiceRoom({
         serverUrl={serverUrl}
         connect
         video={joinWithCameraEnabled}
-        audio={joinWithMicEnabled ? micCaptureOptions : false}
+        audio={joinWithMicEnabled && !joinDeafened ? micCaptureOptions : false}
         options={roomOptions}
         connectOptions={ROOM_CONNECT_OPTIONS}
         onDisconnected={() => onLeave(token)}
@@ -403,6 +411,9 @@ export function VoiceRoom({
           onPresenceStatusChanged={onPresenceStatusChanged}
           onListeningStateChanged={onListeningStateChanged}
           onMicrophoneStateChanged={onMicrophoneStateChanged}
+          onDeafenStateChanged={onDeafenStateChanged}
+          joinDeafened={joinDeafened}
+          joinMicBeforeDeafen={joinMicBeforeDeafen}
         />
       </LiveKitRoom>
     </div>
@@ -427,6 +438,9 @@ function VoiceRoomContent({
   onPresenceStatusChanged,
   onListeningStateChanged,
   onMicrophoneStateChanged,
+  onDeafenStateChanged,
+  joinDeafened,
+  joinMicBeforeDeafen,
 }: {
   serverId: string | null;
   avatarByUserId: Record<string, string>;
@@ -453,6 +467,9 @@ function VoiceRoomContent({
   onPresenceStatusChanged?: () => void;
   onListeningStateChanged?: (stateByUserId: Record<string, boolean>) => void;
   onMicrophoneStateChanged?: (enabled: boolean) => void;
+  onDeafenStateChanged?: (deafened: boolean, micBeforeDeafen: boolean | null) => void;
+  joinDeafened: boolean;
+  joinMicBeforeDeafen: boolean | null;
 }) {
   const room = useRoomContext();
   const isMobile = useIsMobile();
@@ -468,7 +485,11 @@ function VoiceRoomContent({
     const events = [RoomEvent.Connected, RoomEvent.LocalTrackPublished, RoomEvent.TrackMuted, RoomEvent.TrackUnmuted];
     events.forEach((event) => room.on(event, reportMicrophone));
     reportMicrophone();
-    return () => { events.forEach((event) => room.off(event, reportMicrophone)); };
+    return () => {
+      // Último retrato antes de sair (ex.: ao ser movido de canal)
+      reportMicrophone();
+      events.forEach((event) => room.off(event, reportMicrophone));
+    };
   }, [room, onMicrophoneStateChanged]);
 
 
@@ -560,14 +581,15 @@ function VoiceRoomContent({
   const [audioVolumeByParticipant, setAudioVolumeByParticipant] = useState<Record<string, number>>({});
   const [sharedAudioPreferenceByParticipant, setSharedAudioPreferenceByParticipant] = useState<Record<string, boolean>>({});
   const [sharedAudioVolumeByParticipant, setSharedAudioVolumeByParticipant] = useState<Record<string, number>>({});
-  const [isSelfSilenced, setIsSelfSilenced] = useState(false);
+  // Começa ensurdecido se o usuário já estava assim antes de trocar/ser movido de canal
+  const [isSelfSilenced, setIsSelfSilenced] = useState(joinDeafened);
   const [watchedParticipantIds, setWatchedParticipantIds] = useState<string[]>([]);
   const [watchStateByViewer, setWatchStateByViewer] = useState<Record<string, WatchStateMessage>>({});
   const [listeningStateByParticipant, setListeningStateByParticipant] = useState<Record<string, boolean>>({});
   const selfScreenShareMonitorAudioRef = useRef<HTMLAudioElement | null>(null);
   const audioOnlyShareTrackRef = useRef<LocalAudioTrack | null>(null);
   const audioOnlyShareStreamRef = useRef<MediaStream | null>(null);
-  const previousMicEnabledRef = useRef<boolean | null>(null);
+  const previousMicEnabledRef = useRef<boolean | null>(joinDeafened ? joinMicBeforeDeafen ?? false : null);
   const knownParticipantIdsRef = useRef<Set<string>>(new Set());
   const isInitialPresenceSyncDoneRef = useRef(false);
   const rnnoiseAttachmentRef = useRef<RnnNoiseAttachment | null>(null);
@@ -2167,6 +2189,11 @@ function VoiceRoomContent({
     shouldSubscribeToAudioPublication,
     watchedParticipantIds,
   ]);
+
+  // Avisa o app-shell para que o estado sobreviva a uma troca de canal (a sala é recriada)
+  useEffect(() => {
+    onDeafenStateChanged?.(isSelfSilenced, isSelfSilenced ? previousMicEnabledRef.current : null);
+  }, [isSelfSilenced, onDeafenStateChanged]);
 
   useEffect(() => {
     if (!room.localParticipant.isMicrophoneEnabled) {

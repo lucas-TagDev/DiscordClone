@@ -593,6 +593,11 @@ export function AppShell() {
   const userIdRef = useRef<string>("");
   const voiceMicrophoneEnabledRef = useRef<boolean | null>(null);
   const [voiceEntryMicEnabled, setVoiceEntryMicEnabled] = useState(true);
+  // Ensurdecido (não ouve ninguém) precisa sobreviver à troca de canal, como o microfone
+  const voiceDeafenedRef = useRef(false);
+  const voiceMicBeforeDeafenRef = useRef<boolean | null>(null);
+  const [voiceEntryDeafened, setVoiceEntryDeafened] = useState(false);
+  const [voiceEntryMicBeforeDeafen, setVoiceEntryMicBeforeDeafen] = useState<boolean | null>(null);
   const voiceTokenRef = useRef<string | null>(null);
   const directUnreadByConversationIdRef = useRef<Record<string, number>>({});
   const knownDirectLastMessageAtByConversationIdRef = useRef<Record<string, string>>({});
@@ -6120,7 +6125,7 @@ export function AppShell() {
     );
   };
 
-  const connectToVoiceChannel = useCallback(async (channelId: string) => {
+  const connectToVoiceChannel = useCallback(async (channelId: string, options?: { preserveSelfState?: boolean }) => {
     if (!isAuthenticated || !selectedServerId || !serverDetails) {
       return;
     }
@@ -6146,10 +6151,16 @@ export function AppShell() {
       return;
     }
 
-    // Snapshot before disconnect: a new room must inherit the current mute state.
-    const microphoneEnabled = activeVoiceChannelId
-      ? (voiceMicrophoneEnabledRef.current ?? joinWithMicEnabled)
-      : joinWithMicEnabled;
+    // Snapshot before disconnect: a new room must inherit the current mute/deafen state.
+    // Ao ser movido por um moderador o estado é sempre preservado, mesmo se a sala antiga já caiu.
+    const preserveSelfState = !!activeVoiceChannelId || !!options?.preserveSelfState;
+    const deafened = preserveSelfState ? voiceDeafenedRef.current : false;
+    const micBeforeDeafen = deafened ? voiceMicBeforeDeafenRef.current : null;
+    const microphoneEnabled = deafened
+      ? false
+      : preserveSelfState
+        ? (voiceMicrophoneEnabledRef.current ?? joinWithMicEnabled)
+        : joinWithMicEnabled;
     if (activeVoiceChannelId && activeVoiceChannelId !== channel.id) {
       handleVoiceLeave();
     }
@@ -6182,6 +6193,10 @@ export function AppShell() {
 
     voiceMicrophoneEnabledRef.current = microphoneEnabled;
     setVoiceEntryMicEnabled(microphoneEnabled);
+    voiceDeafenedRef.current = deafened;
+    voiceMicBeforeDeafenRef.current = micBeforeDeafen;
+    setVoiceEntryDeafened(deafened);
+    setVoiceEntryMicBeforeDeafen(micBeforeDeafen);
     voiceTokenRef.current = payload.token;
     setVoiceToken(payload.token);
     setVoiceServerUrl(payload.serverUrl);
@@ -6223,7 +6238,7 @@ export function AppShell() {
 
       if (payload.action.type === "move" && payload.action.targetChannelId) {
         playVoiceMoveSound();
-        await connectToVoiceChannel(payload.action.targetChannelId);
+        await connectToVoiceChannel(payload.action.targetChannelId, { preserveSelfState: true });
         if (payload.action.reason) {
           setError(`Você foi movido de canal. Motivo: ${payload.action.reason}`);
         }
@@ -10000,12 +10015,20 @@ export function AppShell() {
               }`}
             >
               <VoiceRoom
+                key={voiceToken!}
                 token={voiceToken!}
                 serverUrl={voiceServerUrl!}
                 serverId={activeVoiceServerId}
                 joinWithMicEnabled={voiceEntryMicEnabled}
+                joinDeafened={voiceEntryDeafened}
+                joinMicBeforeDeafen={voiceEntryMicBeforeDeafen}
                 onMicrophoneStateChanged={(enabled) => {
                   if (voiceTokenRef.current === voiceToken) voiceMicrophoneEnabledRef.current = enabled;
+                }}
+                onDeafenStateChanged={(deafened, micBeforeDeafen) => {
+                  if (voiceTokenRef.current !== voiceToken) return;
+                  voiceDeafenedRef.current = deafened;
+                  voiceMicBeforeDeafenRef.current = micBeforeDeafen;
                 }}
                 joinWithCameraEnabled={joinWithCameraEnabled}
                 noiseSuppressionEnabled={noiseSuppressionEnabled}
