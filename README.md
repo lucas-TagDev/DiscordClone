@@ -93,12 +93,8 @@ Consulte o template completo em [.env.example](.env.example).
 - `npm run db:push` — sincroniza schema no banco
 
 <p align="center">
-  <img src="./s1.png" width="720"/>
-  <img src="./s2.png" width="720"/>
-</p>
-<p align="center">
-  <img src="./s3.png" width="720"/>
-  <img src="./s4.png" width="720"/>
+  <img src="./s1.png" width="720" alt="Canal de voz com a call aberta"/>
+  <img src="./s2.png" width="720" alt="Compartilhamento de tela no canal de voz"/>
 </p>
 
 
