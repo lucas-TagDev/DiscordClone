@@ -274,7 +274,7 @@ const handlePlay = async (
     postBotMessage(context.serverId, context.channelId, config, content);
 
   if (!argument) {
-    await reply("Use /play <link do YouTube, YouTube Music ou faixa do Spotify> para colocar uma música na fila.");
+    await reply("Use /play <link do YouTube, YouTube Music ou do Spotify (música, álbum ou playlist)> para colocar músicas na fila.");
     return;
   }
 
@@ -292,6 +292,7 @@ const handlePlay = async (
   // Resolve o link antes de entrar na call: um link inválido não deve arrastar o bot.
   const resolution = await resolveTracks(argument, config.binaries, {
     maxTracks: config.maxPlaylistTracks,
+    spotifyAudio: config.spotifyAudio,
   });
 
   const player = await getOrCreatePlayer(context.serverId, userChannelId, config, (content) =>
@@ -314,6 +315,8 @@ const handlePlay = async (
       url: track.url,
       title: track.title,
       durationSeconds: track.durationSeconds,
+      resolveUrl: track.resolveUrl,
+      spotifyTrackId: track.spotifyTrackId,
       requestedBy: context.userId,
       requestedByName: context.userName,
     });
@@ -342,6 +345,10 @@ const handlePlay = async (
 
   if (resolution.truncated) {
     parts.push(`Lidas apenas as ${config.maxPlaylistTracks} primeiras faixas.`);
+  }
+
+  if (resolution.sourceNote) {
+    parts.push(resolution.sourceNote);
   }
 
   await reply(parts.join(" "));

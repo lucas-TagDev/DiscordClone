@@ -11,6 +11,9 @@
     "db:push": "prisma db push",
     "promote-admin": "node scripts/promote-admin.ts",
     "setup:rnnoise": "node scripts/setup-rnnoise.cjs",
+    "spotify:build": "cargo build --release --manifest-path tools/spotify-pcm/Cargo.toml",
+    "spotify:login": "cargo run --release --quiet --manifest-path tools/spotify-pcm/Cargo.toml -- login --cache .spotify-cache",
+    "spotify:check": "cargo run --release --quiet --manifest-path tools/spotify-pcm/Cargo.toml -- check --cache .spotify-cache",
     "postinstall": "node scripts/setup-rnnoise.cjs"
   },
   "dependencies": {

@@ -14,6 +14,7 @@ import { useIsMobile } from "@/lib/use-is-mobile";
 import { LinkPreview } from "@/components/link-preview";
 import { SpoilerText } from "@/components/spoiler-text";
 import { MessageReactions } from "@/components/message-reactions";
+import { OnboardingTour, type OnboardingStep } from "@/components/onboarding-tour";
 import { Channel, ChannelCategory, ChannelType, ChatMessage, DirectChatMessage, DirectConversation, DirectFriend, DisplayNameStyle, MessageReaction, ModeratorPermissions, Role, Server, ServerAuditLog, ServerBan, ServerEmoji, ServerInvite, ServerSticker } from "@/lib/types";
 
 type ServerDetailsResponse = {
@@ -101,6 +102,26 @@ const EqualizerGlyph = () => (
   </svg>
 );
 
+const GearIcon = ({ size = 16 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="3" />
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+  </svg>
+);
+
+// Item do menu que abre ao clicar no nome do servidor
+const ServerMenuItem = ({ icon, onClick, children }: { icon: ReactNode; onClick: () => void; children: ReactNode }) => (
+  <button
+    type="button"
+    role="menuitem"
+    onClick={onClick}
+    className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm text-[var(--tk-text-muted)] transition-colors hover:bg-[var(--tk-accent)] hover:text-white"
+  >
+    <span className="flex w-4 shrink-0 items-center justify-center">{icon}</span>
+    <span className="truncate">{children}</span>
+  </button>
+);
+
 export function AppShell() {
   const appName = process.env.NEXT_PUBLIC_APP_NAME?.trim() || "TwinSLKIt";
   const appInitials =
@@ -183,6 +204,28 @@ export function AppShell() {
 
   const [rememberMe, setRememberMe] = useState(false);
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  // Separado de `userName` (que começa como "Visitante") para o cadastro abrir vazio.
+  const [registerDisplayName, setRegisterDisplayName] = useState("");
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [isServerMenuOpen, setIsServerMenuOpen] = useState(false);
+  const [copiedUserId, setCopiedUserId] = useState(false);
+  const serverMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isServerMenuOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!serverMenuRef.current?.contains(event.target as Node)) setIsServerMenuOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsServerMenuOpen(false);
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [isServerMenuOpen]);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const [turnstileWidgetId, setTurnstileWidgetId] = useState<string | null>(null);
@@ -2837,7 +2880,7 @@ export function AppShell() {
   const handleAuth = async (event: FormEvent) => {
     event.preventDefault();
     const trimmedAuthUsername = authUsername.trim();
-    const trimmedName = userName.trim();
+    const trimmedName = registerDisplayName.trim();
     const trimmedPassword = password.trim();
 
     if (!trimmedPassword) {
@@ -2852,11 +2895,19 @@ export function AppShell() {
 
     if (authMode === "register") {
       if (!trimmedAuthUsername) {
-        setError("Informe um usuário para cadastro.");
+        setError("Escolha um usuário de login.");
+        return;
+      }
+      if (trimmedAuthUsername.length < 3 || !/^[a-zA-Z0-9._-]+$/.test(trimmedAuthUsername)) {
+        setError("O usuário precisa ter de 3 a 30 caracteres, só com letras, números, ponto, hífen ou _ (sem espaços).");
         return;
       }
       if (!trimmedName) {
-        setError("Informe seu nome para cadastro.");
+        setError("Informe o nome de exibição (como os outros vão te ver).");
+        return;
+      }
+      if (trimmedPassword.length < 6) {
+        setError("A senha precisa ter pelo menos 6 caracteres.");
         return;
       }
       if (trimmedPassword !== confirmPassword.trim()) {
@@ -2938,6 +2989,7 @@ export function AppShell() {
 
     setPassword("");
     setConfirmPassword("");
+    setRegisterDisplayName("");
     // Reset Turnstile widget after successful auth
     if (turnstileWidgetId !== null && typeof window !== "undefined" && (window as any).turnstile) {
       (window as any).turnstile.reset(turnstileWidgetId);
@@ -2946,6 +2998,12 @@ export function AppShell() {
     setIsAuthenticated(true);
     window.sessionStorage.setItem("twinslkit:authUserId", payload.user.id);
     setError(null);
+    // Conta nova: abre o tutorial uma vez (depois fica no menu do servidor).
+    if (authMode === "register") {
+      let alreadySeen = false;
+      try { alreadySeen = window.localStorage.getItem(`twinslkit:onboardingDone:${payload.user.id}`) === "1"; } catch {}
+      if (!alreadySeen) setShowOnboarding(true);
+    }
     await loadServers(payload.user.id);
   };
 
@@ -6429,6 +6487,92 @@ export function AppShell() {
     await connectToVoiceChannel(channelId);
   };
 
+  const authInputClass =
+    "h-10 w-full rounded-[3px] border border-transparent bg-[var(--tk-bg-deep)] px-3 text-sm outline-none text-[var(--tk-text)] placeholder:text-[var(--tk-text-faint)] focus:border-[var(--tk-accent)]";
+  const authFieldLabelClass = "text-xs font-semibold uppercase tracking-wide text-[var(--tk-text-muted)]";
+  const authFieldHintClass = "text-[11px] leading-snug text-[var(--tk-text-faint)]";
+
+  const closeOnboarding = () => {
+    setShowOnboarding(false);
+    try { if (userId) window.localStorage.setItem(`twinslkit:onboardingDone:${userId}`, "1"); } catch {}
+  };
+
+  const openServerSettings = () => {
+    setIsServerMenuOpen(false);
+    setSelectedChannelId(null);
+    setSettingsPanelMode("server");
+    setShowSettingsPanel(true);
+    if (isMobile) setMobileView("content");
+  };
+
+  const copyUserId = async () => {
+    if (!userId) return;
+    try {
+      await navigator.clipboard.writeText(userId);
+      setCopiedUserId(true);
+      window.setTimeout(() => setCopiedUserId(false), 1500);
+    } catch {
+      // Sem permissão de área de transferência: o ID continua visível para copiar à mão.
+    }
+  };
+
+  const selectedServerRoleLabel = isSelectedServerOwner
+    ? "Você é o dono"
+    : serverDetails?.currentRole === "admin"
+      ? "Você é administrador"
+      : serverDetails?.currentRole === "moderator"
+        ? "Você é moderador"
+        : null;
+
+  const onboardingSteps: OnboardingStep[] = [
+    {
+      title: `Bem-vindo ao ${appName}!`,
+      body: (
+        <p>Vamos fazer um tour rápido pelas partes principais. Use as setas do teclado ou os botões abaixo. Você pode rever este tutorial no menu do servidor.</p>
+      ),
+    },
+    {
+      target: "create-server",
+      title: "Crie ou entre em um servidor",
+      body: <p>Clique no <strong className="text-[var(--tk-green)]">+</strong> para criar o seu servidor. Os servidores em que você está aparecem nesta coluna.</p>,
+    },
+    {
+      target: "server-menu",
+      title: "Menu do servidor",
+      body: (
+        <>
+          <p>Clique no nome do servidor para abrir o menu: configurações, convites e criação de canais.</p>
+          <p>Se você é dono ou administrador, aparece também a <strong>engrenagem</strong> ao lado, que leva direto às configurações do servidor.</p>
+        </>
+      ),
+    },
+    {
+      target: "channel-list",
+      title: "Canais de texto e voz",
+      body: (
+        <>
+          <p>Aqui ficam os canais. <strong>#</strong> são canais de texto; os com alto-falante são de voz (clique para entrar na call).</p>
+          <p>Para criar um canal de texto, de voz ou uma categoria, use o menu do servidor ou clique com o botão direito nesta área.</p>
+        </>
+      ),
+    },
+    {
+      target: "direct-messages",
+      title: "Mensagens diretas",
+      body: <p>Conversas privadas com amigos ficam aqui. Para começar uma, clique com o botão direito em um membro do servidor.</p>,
+    },
+    {
+      target: "user-card",
+      title: "Esse é você",
+      body: (
+        <>
+          <p>O número abaixo do seu nome é o seu <strong>ID de usuário</strong>. Clique nele para copiar e passe para quem quiser te encontrar.</p>
+          <p>Em <strong>Minha conta</strong> você muda nome, foto, microfone e atalhos.</p>
+        </>
+      ),
+    },
+  ];
+
   const switchAuthMode = (mode: "login" | "register") => {
     setAuthMode(mode);
     setError(null);
@@ -6586,48 +6730,87 @@ export function AppShell() {
                     </p>
                   )}
 
-                  <form onSubmit={handleAuth} className="space-y-3">
+                  <form onSubmit={handleAuth} className="space-y-3" noValidate>
                     <div className="grid gap-3">
-                      <input
-                        className="h-10 w-full rounded-[3px] border-none bg-[var(--tk-bg-deep)] px-3 text-sm outline-none text-[var(--tk-text)] placeholder:text-[var(--tk-text-faint)]"
-                        value={authUsername}
-                        onChange={(event) => setAuthUsername(event.target.value)}
-                        placeholder={authMode === "login" ? "Usuário" : "Usuário para login"}
-                      />
+                      <label className="grid gap-1">
+                        <span className={authFieldLabelClass}>
+                          {authMode === "login" ? "Usuário" : "Usuário de login"}
+                          {authMode === "register" && <span className="text-[#F23F42]"> *</span>}
+                        </span>
+                        <input
+                          className={authInputClass}
+                          value={authUsername}
+                          onChange={(event) => setAuthUsername(event.target.value)}
+                          placeholder={authMode === "login" ? "Seu usuário" : "ex.: joao.silva"}
+                          autoComplete="username"
+                          autoCapitalize="none"
+                          spellCheck={false}
+                          maxLength={30}
+                        />
+                        {authMode === "register" && (
+                          <span className={authFieldHintClass}>
+                            Usado só para entrar. 3 a 30 caracteres: letras, números, ponto, hífen ou _ (sem espaços).
+                          </span>
+                        )}
+                      </label>
 
                       <div
-                        className={`grid gap-3 overflow-hidden transition-all duration-500 ${
+                        className={`grid overflow-hidden transition-all duration-500 ${
                           authMode === "register" ? "max-h-40 opacity-100" : "max-h-0 opacity-0"
                         }`}
+                        aria-hidden={authMode !== "register"}
                       >
-                        <input
-                          className="h-10 w-full rounded-[3px] border-none bg-[var(--tk-bg-deep)] px-3 text-sm outline-none text-[var(--tk-text)] placeholder:text-[var(--tk-text-faint)]"
-                          value={userName}
-                          onChange={(event) => setUserName(event.target.value)}
-                          placeholder="Nome de exibição"
-                        />
+                        <label className="grid gap-1">
+                          <span className={authFieldLabelClass}>
+                            Nome de exibição<span className="text-[#F23F42]"> *</span>
+                          </span>
+                          <input
+                            className={authInputClass}
+                            value={registerDisplayName}
+                            onChange={(event) => setRegisterDisplayName(event.target.value)}
+                            placeholder="Como os outros vão te ver, ex.: João"
+                            autoComplete="nickname"
+                            maxLength={40}
+                            tabIndex={authMode === "register" ? 0 : -1}
+                          />
+                          <span className={authFieldHintClass}>Aparece nas mensagens e na call. Dá para trocar depois.</span>
+                        </label>
                       </div>
 
-                      <input
-                        type="password"
-                        className="h-10 w-full rounded-[3px] border-none bg-[var(--tk-bg-deep)] px-3 text-sm outline-none text-[var(--tk-text)] placeholder:text-[var(--tk-text-faint)]"
-                        value={password}
-                        onChange={(event) => setPassword(event.target.value)}
-                        placeholder="Senha"
-                      />
-
-                      <div
-                        className={`overflow-hidden transition-all duration-500 ${
-                          authMode === "register" ? "max-h-16 opacity-100" : "max-h-0 opacity-0"
-                        }`}
-                      >
+                      <label className="grid gap-1">
+                        <span className={authFieldLabelClass}>
+                          Senha{authMode === "register" && <span className="text-[#F23F42]"> *</span>}
+                        </span>
                         <input
                           type="password"
-                          className="h-10 w-full rounded-[3px] border-none bg-[var(--tk-bg-deep)] px-3 text-sm outline-none text-[var(--tk-text)] placeholder:text-[var(--tk-text-faint)]"
-                          value={confirmPassword}
-                          onChange={(event) => setConfirmPassword(event.target.value)}
-                          placeholder="Confirmar senha"
+                          className={authInputClass}
+                          value={password}
+                          onChange={(event) => setPassword(event.target.value)}
+                          placeholder={authMode === "login" ? "Sua senha" : "Mínimo de 6 caracteres"}
+                          autoComplete={authMode === "login" ? "current-password" : "new-password"}
                         />
+                      </label>
+
+                      <div
+                        className={`grid overflow-hidden transition-all duration-500 ${
+                          authMode === "register" ? "max-h-24 opacity-100" : "max-h-0 opacity-0"
+                        }`}
+                        aria-hidden={authMode !== "register"}
+                      >
+                        <label className="grid gap-1">
+                          <span className={authFieldLabelClass}>
+                            Confirmar senha<span className="text-[#F23F42]"> *</span>
+                          </span>
+                          <input
+                            type="password"
+                            className={authInputClass}
+                            value={confirmPassword}
+                            onChange={(event) => setConfirmPassword(event.target.value)}
+                            placeholder="Digite a senha de novo"
+                            autoComplete="new-password"
+                            tabIndex={authMode === "register" ? 0 : -1}
+                          />
+                        </label>
                       </div>
                     </div>
 
@@ -6716,6 +6899,7 @@ export function AppShell() {
                 : "bg-[var(--tk-bg-main)] text-[var(--tk-text)] hover:bg-[var(--tk-accent)] hover:text-white rounded-[24px] hover:rounded-[16px]"
             }`}
             title="Mensagens diretas"
+            data-tour="direct-messages"
           >
             <span className="relative inline-flex h-full w-full items-center justify-center">
               DM
@@ -6784,6 +6968,9 @@ export function AppShell() {
             type="button"
             onClick={() => setShowCreateServerModal(true)}
             disabled={busy}
+            data-tour="create-server"
+            title="Criar servidor"
+            aria-label="Criar servidor"
             className="h-12 w-12 rounded-[24px] hover:rounded-[16px] bg-[var(--tk-bg-main)] hover:bg-[var(--tk-green)] text-[var(--tk-green)] hover:text-white text-2xl transition-all duration-200 disabled:opacity-60 mx-auto flex items-center justify-center"
           >
             +
@@ -6796,26 +6983,138 @@ export function AppShell() {
             className="max-md:hidden absolute top-0 right-0 w-[3px] h-full cursor-col-resize z-20 hover:bg-[var(--tk-accent)] transition-colors duration-150"
             style={{ touchAction: "none" }}
           />
-          <div className="h-16 px-4 flex items-center gap-3 border-b border-[var(--tk-line)] shrink-0 z-10">
-            {appMode === "server" && serverDetails?.server.avatarUrl ? (
-              <img
-                src={serverDetails.server.avatarUrl}
-                alt={serverDetails.server.name}
-                className="h-10 w-10 rounded-full object-cover shrink-0 ring-2 ring-[var(--tk-accent)] shadow-[0_0_14px_var(--tk-accent-glow)]"
-              />
-            ) : (
-              <span className="h-10 w-10 rounded-full neon-active flex items-center justify-center text-xs font-bold shrink-0">
-                {appMode === "direct" ? "DM" : (serverDetails?.server.name ?? appInitials).slice(0, 2).toUpperCase()}
+          <div
+            ref={serverMenuRef}
+            data-tour="server-menu"
+            className="relative h-16 px-2 flex items-center gap-1 border-b border-[var(--tk-line)] shrink-0 z-30"
+          >
+            <button
+              type="button"
+              disabled={appMode !== "server" || !serverDetails}
+              onClick={() => setIsServerMenuOpen((value) => !value)}
+              aria-haspopup="menu"
+              aria-expanded={isServerMenuOpen}
+              title={appMode === "server" && serverDetails ? "Abrir menu do servidor" : undefined}
+              className="group/srv flex min-w-0 flex-1 items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors enabled:hover:bg-[var(--tk-bg-hover)] disabled:cursor-default"
+            >
+              {appMode === "server" && serverDetails?.server.avatarUrl ? (
+                <img
+                  src={serverDetails.server.avatarUrl}
+                  alt={serverDetails.server.name}
+                  className="h-10 w-10 rounded-full object-cover shrink-0 ring-2 ring-[var(--tk-accent)] shadow-[0_0_14px_var(--tk-accent-glow)]"
+                />
+              ) : (
+                <span className="h-10 w-10 rounded-full neon-active flex items-center justify-center text-xs font-bold shrink-0">
+                  {appMode === "direct" ? "DM" : (serverDetails?.server.name ?? appInitials).slice(0, 2).toUpperCase()}
+                </span>
+              )}
+              <span className="min-w-0 flex-1">
+                <h2 className="neon-title font-extrabold text-[18px] leading-tight truncate">
+                  {appMode === "direct" ? "Mensagens diretas" : serverDetails?.server.name ?? "Sem servidor"}
+                </h2>
+                {appMode === "server" && serverDetails && selectedServerRoleLabel && (
+                  <span className="block truncate text-[11px] font-medium text-[var(--tk-accent-soft)]">{selectedServerRoleLabel}</span>
+                )}
               </span>
+              {appMode === "server" && serverDetails && (
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                  className={`shrink-0 text-[var(--tk-text-subtle)] transition-transform group-hover/srv:text-white ${isServerMenuOpen ? "rotate-180" : ""}`}
+                >
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+              )}
+            </button>
+
+            {appMode === "server" && serverDetails && canManageChannels && (
+              <button
+                type="button"
+                onClick={openServerSettings}
+                title="Configurações do servidor"
+                aria-label="Configurações do servidor"
+                className="shrink-0 rounded-md p-2 text-[var(--tk-text-subtle)] transition-colors hover:bg-[var(--tk-bg-hover)] hover:text-white"
+              >
+                <GearIcon size={18} />
+              </button>
             )}
-            <h2 className="neon-title font-extrabold text-[18px] leading-tight truncate">
-              {appMode === "direct" ? "Mensagens diretas" : serverDetails?.server.name ?? "Sem servidor"}
-            </h2>
+
+            {isServerMenuOpen && appMode === "server" && serverDetails && (
+              <div
+                role="menu"
+                className="absolute left-2 right-2 top-[calc(100%+6px)] rounded-lg border border-[var(--tk-border)] bg-[var(--tk-bg-deepest)] p-1.5 shadow-2xl"
+              >
+                <ServerMenuItem icon={<GearIcon size={16} />} onClick={openServerSettings}>
+                  Configurações do servidor
+                </ServerMenuItem>
+                {canManageInvites && (
+                  <ServerMenuItem
+                    icon={(
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <circle cx="9" cy="8" r="3.5" />
+                        <path d="M2.5 20a6.5 6.5 0 0 1 13 0M19 8v6M16 11h6" />
+                      </svg>
+                    )}
+                    onClick={openServerSettings}
+                  >
+                    Convidar pessoas
+                  </ServerMenuItem>
+                )}
+                {canManageChannels && (
+                  <>
+                    <div className="my-1 h-px bg-[var(--tk-line)]" />
+                    <ServerMenuItem icon={<span className="w-4 text-center font-bold">#</span>} onClick={() => { setIsServerMenuOpen(false); openCreateItemModal("text"); }}>
+                      Criar canal de texto
+                    </ServerMenuItem>
+                    <ServerMenuItem
+                      icon={(
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M11 5 6 9H2v6h4l5 4zM15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14" />
+                        </svg>
+                      )}
+                      onClick={() => { setIsServerMenuOpen(false); openCreateItemModal("voice"); }}
+                    >
+                      Criar canal de voz
+                    </ServerMenuItem>
+                    <ServerMenuItem
+                      icon={(
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                        </svg>
+                      )}
+                      onClick={() => { setIsServerMenuOpen(false); openCreateItemModal("category"); }}
+                    >
+                      Criar categoria
+                    </ServerMenuItem>
+                  </>
+                )}
+                <div className="my-1 h-px bg-[var(--tk-line)]" />
+                <ServerMenuItem
+                  icon={(
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <circle cx="12" cy="12" r="9" />
+                      <path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6V14M12 17.5h.01" />
+                    </svg>
+                  )}
+                  onClick={() => { setIsServerMenuOpen(false); setShowOnboarding(true); }}
+                >
+                  Ver tutorial
+                </ServerMenuItem>
+              </div>
+            )}
           </div>
 
           {appMode === "server" ? (
           <div
             className="no-scrollbar flex-1 overflow-y-auto px-0 space-y-0"
+            data-tour="channel-list"
             onScroll={(event) => {
               const target = event.currentTarget;
               const nearBottom = target.scrollHeight - (target.scrollTop + target.clientHeight) < 80;
@@ -7041,7 +7340,32 @@ export function AppShell() {
             )}
 
             {totalServerChannelCount === 0 && (
-              <p className="text-xs text-[var(--tk-text-faint)]">Sem canais. Clique com botão direito para criar.</p>
+              <div className="space-y-2 px-3 py-2 text-xs leading-relaxed text-[var(--tk-text-faint)]">
+                {!serverDetails ? (
+                  <>
+                    <p>Você ainda não está em nenhum servidor.</p>
+                    <p>Clique no <strong className="text-[var(--tk-green)]">+</strong> na coluna da esquerda para criar o seu, ou peça um convite a um amigo.</p>
+                  </>
+                ) : canManageChannels ? (
+                  <>
+                    <p>Este servidor ainda não tem canais.</p>
+                    <div className="grid gap-1.5">
+                      <button type="button" onClick={() => openCreateItemModal("text")} className="rounded-md bg-[var(--tk-bg-hover)] px-2.5 py-1.5 text-left text-[var(--tk-text-muted)] hover:bg-[var(--tk-accent)] hover:text-white">
+                        # Criar canal de texto
+                      </button>
+                      <button type="button" onClick={() => openCreateItemModal("voice")} className="rounded-md bg-[var(--tk-bg-hover)] px-2.5 py-1.5 text-left text-[var(--tk-text-muted)] hover:bg-[var(--tk-accent)] hover:text-white">
+                        🔊 Criar canal de voz
+                      </button>
+                    </div>
+                    <p>Também dá pelo menu do servidor (clique no nome lá em cima) ou com o botão direito aqui.</p>
+                  </>
+                ) : (
+                  <p>Este servidor ainda não tem canais.</p>
+                )}
+                <button type="button" onClick={() => setShowOnboarding(true)} className="text-[var(--tk-accent-soft)] underline-offset-2 hover:underline">
+                  Ver tutorial
+                </button>
+              </div>
             )}
 
             {hasMoreVisibleServerChannels && (
@@ -7162,7 +7486,7 @@ export function AppShell() {
             </div>
           )}
 
-          <div className="neon-card m-2 mt-3 p-2.5 space-y-2">
+          <div className="neon-card m-2 mt-3 p-2.5 space-y-2" data-tour="user-card">
             <div className="flex items-center gap-2">
               {userAvatarUrl ? (
                 <img
@@ -7183,7 +7507,14 @@ export function AppShell() {
                     className="text-sm truncate block"
                   />
                 </div>
-                <p className="text-[11px] text-[var(--tk-text-subtle)] truncate">{userId}</p>
+                <button
+                  type="button"
+                  onClick={copyUserId}
+                  title="Seu ID de usuário: clique para copiar"
+                  className="block max-w-full truncate text-left text-[11px] text-[var(--tk-text-subtle)] hover:text-[var(--tk-text)]"
+                >
+                  {copiedUserId ? "ID copiado!" : <>ID: {userId}</>}
+                </button>
               </div>
             </div>
             <div className="grid grid-cols-2 gap-2">
@@ -7197,9 +7528,10 @@ export function AppShell() {
                   setSettingsPanelMode("all");
                   setShowSettingsPanel(true);
                 }}
+                title="Configurações da sua conta: nome, foto, microfone e atalhos"
                 className="rounded-[3px] bg-transparent hover:bg-[var(--tk-bg-active)] px-2 py-1 text-xs text-[var(--tk-text-muted)] hover:text-[var(--tk-text)]"
               >
-                Configurações
+                Minha conta
               </button>
               <button
                 type="button"
@@ -11232,6 +11564,8 @@ export function AppShell() {
             </div>
           );
         })()}
+
+        {showOnboarding && <OnboardingTour open steps={onboardingSteps} onClose={closeOnboarding} />}
 
         {showCreateServerModal && (
           <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">

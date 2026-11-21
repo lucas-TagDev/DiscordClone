@@ -45,3 +45,7 @@ partiuchat-desktop/dist/
 
 # Configuração local do Claude Code
 .claude/
+
+# Bot de música: login do Spotify e build do spotify-pcm
+.spotify-cache/
+tools/spotify-pcm/target/

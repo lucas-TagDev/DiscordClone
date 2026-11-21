@@ -1,7 +1,19 @@
-import { readSpotifyTrack, spotifyTrackUrl } from "@/lib/music-bot/spotify";
+import {
+  parseSpotifyLink,
+  readSpotifyLink,
+  type SpotifyCollection,
+  type SpotifyLink,
+  type SpotifyTrack,
+} from "@/lib/music-bot/spotify";
 import { spawn } from "node:child_process";
 import type { Readable } from "node:stream";
-import { PCM_CHANNELS, PCM_SAMPLE_RATE, type MusicBotBinaries } from "@/lib/music-bot/config";
+import {
+  PCM_CHANNELS,
+  PCM_SAMPLE_RATE,
+  SPOTIFY_PCM_SAMPLE_RATE,
+  type MusicBotBinaries,
+  type SpotifyAudioConfig,
+} from "@/lib/music-bot/config";
 
 export class MediaError extends Error {}
 
@@ -10,6 +22,16 @@ export type TrackMetadata = {
   url: string;
   title: string;
   durationSeconds: number | null;
+  /**
+   * Para faixas vindas de álbum/playlist do Spotify: busca o áudio no YouTube só na hora
+   * de tocar (memoizado). Quando existe, `url` é o link da faixa no Spotify.
+   */
+  resolveUrl?: () => Promise<string>;
+  /**
+   * Com o áudio direto do Spotify ligado: o ID da faixa, tocada pelo `spotify-pcm`.
+   * Nesse caso `resolveUrl` (quando existe) é só o plano B pelo YouTube.
+   */
+  spotifyTrackId?: string;
 };
 
 export type PlaylistResolution = {
@@ -34,11 +56,15 @@ export const isHttpUrl = (value: string): boolean => {
   }
 };
 
+const SPAWN_HINTS: Record<string, string> = {
+  "yt-dlp": "Instale-o no servidor ou ajuste YT_DLP_PATH.",
+  ffmpeg: "Instale-o no servidor ou ajuste FFMPEG_PATH.",
+  "spotify-pcm": "Compile com `npm run spotify:build` ou ajuste SPOTIFY_PCM_PATH.",
+};
+
 const describeSpawnError = (error: NodeJS.ErrnoException, label: string, binaryPath: string): string => {
   if (error.code === "ENOENT") {
-    return `Não encontrei o ${label} ("${binaryPath}"). Instale-o no servidor ou ajuste ${
-      label === "yt-dlp" ? "YT_DLP_PATH" : "FFMPEG_PATH"
-    }.`;
+    return `Não encontrei o ${label} ("${binaryPath}"). ${SPAWN_HINTS[label] ?? ""}`.trim();
   }
 
   return `Falha ao executar o ${label}: ${error.message}`;
@@ -178,40 +204,132 @@ const readPlaylistEntries = (
 const normalizeMusicText = (value: string) => value.normalize("NFD")
   .replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 
-const resolveSpotifyTrack = async (url: string, binaries: MusicBotBinaries): Promise<PlaylistResolution> => {
-  const track = await readSpotifyTrack(url);
-  const query = `${track.artists.join(" ")} ${track.name} official audio`.trim();
+type YouTubeMatch = { entry: YtDlpInfo; url: string };
+
+/** Procura no YouTube o áudio que corresponde à faixa do Spotify (nome, artista e duração). */
+const findYouTubeMatch = async (track: SpotifyTrack, binaries: MusicBotBinaries): Promise<YouTubeMatch> => {
+  // Com muitos artistas a busca dilui: os dois primeiros bastam para achar a faixa.
+  const query = `${track.artists.slice(0, 2).join(" ")} ${track.name} official audio`.trim();
   const stdout = await collectProcess(binaries.ytDlpPath,
     [...YTDLP_COMMON_ARGS, "--flat-playlist", "--dump-single-json", `ytsearch5:${query}`], "yt-dlp");
   let info: YtDlpInfo;
   try { info = JSON.parse(stdout) as YtDlpInfo; }
   catch { throw new MediaError("Não consegui interpretar a busca da música no YouTube."); }
-  const words = normalizeMusicText(track.name).split(" ").filter(Boolean);
+  const nameWords = normalizeMusicText(track.name).split(" ").filter(Boolean);
   // Sem artista (plano B via oEmbed) a correspondência exige mais do título
-  const artist = track.artists[0] ? normalizeMusicText(track.artists[0]) : null;
-  const minTitleScore = artist ? 0.6 : 0.8;
+  const artists = track.artists.map(normalizeMusicText).filter(Boolean);
+  const minTitleScore = artists.length ? 0.6 : 0.8;
   const candidates = (info.entries ?? []).flatMap((entry) => {
     if (!entry || isLiveEntry(entry)) return [];
     const candidateUrl = readEntryUrl(entry);
     if (!candidateUrl) return [];
-    const title = normalizeMusicText(entry.title ?? "");
+    const titleWords = normalizeMusicText(entry.title ?? "").split(" ");
     const author = normalizeMusicText(`${entry.channel ?? ""} ${entry.uploader ?? ""} ${entry.title ?? ""}`);
-    const titleScore = words.filter((word) => title.split(" ").includes(word)).length / Math.max(1, words.length);
-    if (titleScore < minTitleScore || (artist && !author.includes(artist))) return [];
+    const titleScore = nameWords.filter((word) => titleWords.includes(word)).length / Math.max(1, nameWords.length);
+    // Basta um dos artistas no canal/título (feats costumam sair no canal de outro artista).
+    if (titleScore < minTitleScore || (artists.length && !artists.some((artist) => author.includes(artist)))) return [];
     const duration = readDuration(entry.duration);
     const delta = duration && track.durationSeconds ? Math.abs(duration - track.durationSeconds) : null;
     if (delta !== null && delta > Math.max(25, (track.durationSeconds ?? 0) * 0.15)) return [];
-    // Prefer the requested edition over covers/remixes/live versions with a similar name.
+    // Prefere a versão original a covers/remixes/ao vivo com nome parecido.
     const alternate = ["cover", "remix", "live", "karaoke", "sped", "slowed"]
-      .filter((word) => title.split(" ").includes(word) && !normalizeMusicText(track.name).split(" ").includes(word)).length;
+      .filter((word) => titleWords.includes(word) && !nameWords.includes(word)).length;
     return [{ entry, url: candidateUrl, score: titleScore * 10 - alternate * 8 - (delta ?? 15) / 10 }];
   }).sort((a, b) => b.score - a.score);
   const match = candidates[0];
-  if (!match || match.score < 0) throw new MediaError("Não encontrei uma versão correspondente no YouTube. Envie um link direto do YouTube ou YouTube Music.");
+  if (!match || match.score < 0) {
+    throw new MediaError(`Não encontrei no YouTube uma versão de "${describeSpotifyTrack(track)}". Envie um link direto do YouTube ou YouTube Music.`);
+  }
+  return match;
+};
+
+const describeSpotifyTrack = (track: SpotifyTrack) =>
+  `${track.artists.length ? `${track.artists.join(", ")} — ` : ""}${track.name}`;
+
+const SPOTIFY_TRACK_ID = /\/track\/([a-zA-Z0-9]{22})/;
+
+/** Busca no YouTube só quando for tocar (memoizado; libera nova tentativa se falhar). */
+const lazyYouTubeUrl = (track: SpotifyTrack, binaries: MusicBotBinaries): (() => Promise<string>) => {
+  let pending: Promise<string> | null = null;
+  return () => {
+    pending ??= findYouTubeMatch(track, binaries).then((match) => match.url);
+    pending.catch(() => { pending = null; });
+    return pending;
+  };
+};
+
+/** Áudio direto do Spotify: nada de busca no YouTube na hora do /play. */
+const resolveSpotifyDirect = (
+  collection: SpotifyCollection,
+  binaries: MusicBotBinaries,
+  spotifyAudio: SpotifyAudioConfig,
+  maxTracks: number,
+): PlaylistResolution => {
+  const tracks = collection.tracks.slice(0, maxTracks).flatMap((track): TrackMetadata[] => {
+    const spotifyTrackId = track.url.match(SPOTIFY_TRACK_ID)?.[1];
+    if (!spotifyTrackId) return [];
+    return [{
+      url: track.url,
+      title: describeSpotifyTrack(track),
+      durationSeconds: track.durationSeconds,
+      spotifyTrackId,
+      resolveUrl: spotifyAudio.youtubeFallback ? lazyYouTubeUrl(track, binaries) : undefined,
+    }];
+  });
+
+  if (!tracks.length) {
+    throw new MediaError("Não encontrei faixas tocáveis nesse link do Spotify.");
+  }
+
+  if (collection.kind === "track") {
+    return { playlistTitle: null, truncated: false, tracks, sourceNote: `Áudio direto do Spotify: ${tracks[0].url}` };
+  }
+
   return {
-    playlistTitle: null, truncated: false,
-    tracks: [readMetadata(match.entry, match.url)],
-    sourceNote: `Identificada pelo Spotify: ${track.artists.length ? `${track.artists.join(", ")} — ` : ""}${track.name}.\n${track.url}\nÁudio correspondente do YouTube: ${match.url}`,
+    playlistTitle: `${collection.kind === "album" ? "Álbum" : "Playlist"} do Spotify "${collection.name}"`,
+    tracks,
+    truncated: collection.tracks.length > maxTracks,
+    sourceNote: "Áudio direto do Spotify.",
+  };
+};
+
+const resolveSpotify = async (
+  link: SpotifyLink,
+  binaries: MusicBotBinaries,
+  maxTracks: number,
+  spotifyAudio: SpotifyAudioConfig | null,
+): Promise<PlaylistResolution> => {
+  const collection = await readSpotifyLink(link);
+
+  if (spotifyAudio) {
+    return resolveSpotifyDirect(collection, binaries, spotifyAudio, maxTracks);
+  }
+
+  if (collection.kind === "track") {
+    const track = collection.tracks[0];
+    const match = await findYouTubeMatch(track, binaries);
+    const metadata = readMetadata(match.entry, match.url);
+    return {
+      playlistTitle: null, truncated: false,
+      tracks: [{ ...metadata, title: describeSpotifyTrack(track), durationSeconds: track.durationSeconds ?? metadata.durationSeconds }],
+      sourceNote: `Do Spotify: ${track.url}
+Áudio correspondente do YouTube: ${match.url}`,
+    };
+  }
+
+  // Álbum/playlist: entra tudo na fila já; o áudio de cada faixa é buscado ao tocar.
+  const tracks = collection.tracks.slice(0, maxTracks).map((track): TrackMetadata => ({
+    url: track.url,
+    title: describeSpotifyTrack(track),
+    durationSeconds: track.durationSeconds,
+    resolveUrl: lazyYouTubeUrl(track, binaries),
+  }));
+
+  return {
+    playlistTitle: `${collection.kind === "album" ? "Álbum" : "Playlist"} do Spotify "${collection.name}"`,
+    tracks,
+    truncated: collection.tracks.length > maxTracks,
+    sourceNote: "O áudio de cada faixa é encontrado no YouTube na hora de tocar.",
   };
 };
 
@@ -222,14 +340,14 @@ const resolveSpotifyTrack = async (url: string, binaries: MusicBotBinaries): Pro
 export const resolveTracks = async (
   url: string,
   binaries: MusicBotBinaries,
-  options: { maxTracks: number },
+  options: { maxTracks: number; spotifyAudio?: SpotifyAudioConfig | null },
 ): Promise<PlaylistResolution> => {
   if (!isHttpUrl(url)) {
     throw new MediaError("Envie um link http(s) válido.");
   }
 
-  const spotifyUrl = spotifyTrackUrl(url);
-  if (spotifyUrl) return resolveSpotifyTrack(spotifyUrl, binaries);
+  const spotifyLink = await parseSpotifyLink(url);
+  if (spotifyLink) return resolveSpotify(spotifyLink, binaries, options.maxTracks, options.spotifyAudio ?? null);
 
   // YouTube Music shares video/playlist identifiers with YouTube.
   const parsedUrl = new URL(url);
@@ -276,27 +394,29 @@ export type PcmStream = {
   completion: Promise<void>;
 };
 
-/**
- * Pluga o yt-dlp direto no ffmpeg (sem arquivo temporário): o yt-dlp resolve as
- * URLs e headers do site, e o ffmpeg entrega PCM bruto em tempo real.
- */
-export const openPcmStream = (url: string, binaries: MusicBotBinaries): PcmStream => {
-  if (!isHttpUrl(url)) {
-    throw new MediaError("Envie um link http(s) válido.");
-  }
+type PcmSource = {
+  label: string;
+  command: string;
+  args: string[];
+  /** Argumentos de entrada do ffmpeg que descrevem o que chega pelo stdin. */
+  ffmpegInputArgs: string[];
+  /** Mensagem quando a fonte termina com erro sem explicar no stderr. */
+  failureMessage: string;
+};
 
-  const ytDlp = spawn(
-    binaries.ytDlpPath,
-    // `--no-playlist` garante que o processo de streaming toque somente esta faixa.
-    [...YTDLP_COMMON_ARGS, "--no-playlist", "-f", "bestaudio/best", "-o", "-", url],
-    { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] },
-  );
+/**
+ * Pluga a fonte (yt-dlp ou spotify-pcm) direto no ffmpeg, sem arquivo temporário: o
+ * ffmpeg entrega PCM bruto 48kHz estéreo em tempo real.
+ */
+const openPipedPcmStream = (source: PcmSource, ffmpegPath: string): PcmStream => {
+  const producer = spawn(source.command, source.args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
   const ffmpeg = spawn(
-    binaries.ffmpegPath,
+    ffmpegPath,
     [
       "-hide_banner",
       "-loglevel",
       "error",
+      ...source.ffmpegInputArgs,
       "-i",
       "pipe:0",
       "-vn",
@@ -314,8 +434,8 @@ export const openPcmStream = (url: string, binaries: MusicBotBinaries): PcmStrea
   let stopped = false;
   let settled = false;
   let spawnFailed = false;
-  let ytDlpExitCode: number | null = null;
-  let ytDlpStderr = "";
+  let producerExitCode: number | null = null;
+  let producerStderr = "";
   let ffmpegStderr = "";
 
   let resolveCompletion: () => void = () => {};
@@ -347,10 +467,10 @@ export const openPcmStream = (url: string, binaries: MusicBotBinaries): PcmStrea
   }, 30 * 60 * 1000);
   watchdog.unref?.();
 
-  ytDlp.stderr?.setEncoding("utf8");
-  ytDlp.stderr?.on("data", (chunk: string) => {
-    if (ytDlpStderr.length < STDERR_LIMIT) {
-      ytDlpStderr += chunk;
+  producer.stderr?.setEncoding("utf8");
+  producer.stderr?.on("data", (chunk: string) => {
+    if (producerStderr.length < STDERR_LIMIT) {
+      producerStderr += chunk;
     }
   });
   ffmpeg.stderr?.setEncoding("utf8");
@@ -360,28 +480,28 @@ export const openPcmStream = (url: string, binaries: MusicBotBinaries): PcmStrea
     }
   });
 
-  ytDlp.on("error", (error) => {
+  producer.on("error", (error) => {
     spawnFailed = true;
-    settle(describeSpawnError(error as NodeJS.ErrnoException, "yt-dlp", binaries.ytDlpPath));
+    settle(describeSpawnError(error as NodeJS.ErrnoException, source.label, source.command));
   });
   ffmpeg.on("error", (error) => {
     spawnFailed = true;
-    settle(describeSpawnError(error as NodeJS.ErrnoException, "ffmpeg", binaries.ffmpegPath));
+    settle(describeSpawnError(error as NodeJS.ErrnoException, "ffmpeg", ffmpegPath));
   });
-  ytDlp.stdout?.on("error", () => {
+  producer.stdout?.on("error", () => {
     // O término do ffmpeg decide se a faixa foi reproduzida.
   });
   ffmpeg.stdin?.on("error", () => {
-    // O ffmpeg pode fechar o stdin antes do yt-dlp terminar (ex: skip): ignorar.
+    // O ffmpeg pode fechar o stdin antes da fonte terminar (ex: skip): ignorar.
   });
 
-  if (ytDlp.stdout && ffmpeg.stdin) {
-    ytDlp.stdout.pipe(ffmpeg.stdin);
+  if (producer.stdout && ffmpeg.stdin) {
+    producer.stdout.pipe(ffmpeg.stdin);
   }
 
-  ytDlp.on("close", (code) => {
-    ytDlpExitCode = code;
-    ytDlp.stdout?.destroy();
+  producer.on("close", (code) => {
+    producerExitCode = code;
+    producer.stdout?.destroy();
     ffmpeg.stdin?.end();
   });
 
@@ -391,13 +511,14 @@ export const openPcmStream = (url: string, binaries: MusicBotBinaries): PcmStrea
       return;
     }
 
-    if (code !== 0) {
-      settle(lastLines(ffmpegStderr) || lastLines(ytDlpStderr) || "Não consegui decodificar o áudio desse link.");
+    // A falha da fonte vem primeiro: sem entrada, o ffmpeg só diria "Invalid data".
+    if (producerExitCode !== null && producerExitCode !== 0) {
+      settle(lastLines(producerStderr) || source.failureMessage);
       return;
     }
 
-    if (ytDlpExitCode !== null && ytDlpExitCode !== 0) {
-      settle(lastLines(ytDlpStderr) || "Não consegui baixar o áudio desse link.");
+    if (code !== 0) {
+      settle(lastLines(ffmpegStderr) || lastLines(producerStderr) || "Não consegui decodificar o áudio desse link.");
       return;
     }
 
@@ -408,12 +529,56 @@ export const openPcmStream = (url: string, binaries: MusicBotBinaries): PcmStrea
     output: ffmpeg.stdout as Readable,
     stop: () => {
       stopped = true;
-      ytDlp.stdout?.destroy();
-      ytDlp.kill("SIGKILL");
+      producer.stdout?.destroy();
+      producer.kill("SIGKILL");
       ffmpeg.stdin?.destroy();
       ffmpeg.stdout?.destroy();
       ffmpeg.kill("SIGKILL");
     },
     completion,
   };
+};
+
+/** Toca um link pelo yt-dlp (YouTube, YouTube Music e outros sites suportados). */
+export const openPcmStream = (url: string, binaries: MusicBotBinaries): PcmStream => {
+  if (!isHttpUrl(url)) {
+    throw new MediaError("Envie um link http(s) válido.");
+  }
+
+  return openPipedPcmStream({
+    label: "yt-dlp",
+    command: binaries.ytDlpPath,
+    // `--no-playlist` garante que o processo de streaming toque somente esta faixa.
+    args: [...YTDLP_COMMON_ARGS, "--no-playlist", "-f", "bestaudio/best", "-o", "-", url],
+    ffmpegInputArgs: [],
+    failureMessage: "Não consegui baixar o áudio desse link.",
+  }, binaries.ffmpegPath);
+};
+
+/**
+ * Toca uma faixa com o áudio original do Spotify pelo `spotify-pcm` (motor librespot do
+ * spotatui), que escreve PCM s16le 44.1kHz estéreo no stdout.
+ */
+export const openSpotifyPcmStream = (
+  trackId: string,
+  spotifyAudio: SpotifyAudioConfig,
+  binaries: MusicBotBinaries,
+): PcmStream => {
+  if (!/^[a-zA-Z0-9]{22}$/.test(trackId)) {
+    throw new MediaError("ID de faixa do Spotify inválido.");
+  }
+
+  return openPipedPcmStream({
+    label: "spotify-pcm",
+    command: spotifyAudio.binaryPath,
+    args: [
+      "play",
+      "--cache", spotifyAudio.cacheDir,
+      "--bitrate", String(spotifyAudio.bitrate),
+      ...(spotifyAudio.normalize ? ["--normalize"] : []),
+      `spotify:track:${trackId}`,
+    ],
+    ffmpegInputArgs: ["-f", "s16le", "-ar", String(SPOTIFY_PCM_SAMPLE_RATE), "-ac", "2"],
+    failureMessage: "O Spotify não entregou o áudio desta faixa.",
+  }, binaries.ffmpegPath);
 };

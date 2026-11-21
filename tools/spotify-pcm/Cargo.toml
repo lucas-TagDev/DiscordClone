@@ -1,0 +1,23 @@
+[package]
+name = "spotify-pcm"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+description = "Toca uma faixa do Spotify e escreve o PCM bruto (s16le, 44.1kHz, estéreo) no stdout, para o bot de música."
+license = "MIT"
+
+# Motor de streaming do spotatui (https://github.com/LargeModGames/spotatui): o fork
+# mantido do librespot, publicado como spotatui-librespot-*. O `package =` mantém os
+# nomes `librespot_*` no código. Fixado com `=` porque as sete crates sobem juntas.
+[dependencies]
+librespot-core = { version = "=0.8.7", package = "spotatui-librespot-core" }
+librespot-oauth = { version = "=0.8.7", package = "spotatui-librespot-oauth" }
+librespot-playback = { version = "=0.8.7", package = "spotatui-librespot-playback", default-features = false, features = ["native-tls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+env_logger = { version = "0.11", default-features = false }
+log = "0.4"
+
+[profile.release]
+lto = "thin"
+strip = true

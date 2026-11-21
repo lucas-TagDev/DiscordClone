@@ -91,6 +91,7 @@ Consulte o template completo em [.env.example](.env.example).
 - `npm run lint` — lint do projeto
 - `npm run db:generate` — gera cliente Prisma
 - `npm run db:push` — sincroniza schema no banco
+- `npm run spotify:build` / `spotify:login` / `spotify:check` — áudio original do Spotify no bot de música (veja [tools/spotify-pcm](tools/spotify-pcm/README.md))
 
 <p align="center">
   <img src="./screenshot-call.png" width="720" alt="Canal de voz com a call aberta"/>

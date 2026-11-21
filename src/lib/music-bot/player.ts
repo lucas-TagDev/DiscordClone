@@ -5,7 +5,10 @@ import {
   PCM_SAMPLE_RATE,
   type MusicBotConfig,
 } from "@/lib/music-bot/config";
-import { MediaError, openPcmStream, type PcmStream } from "@/lib/music-bot/media";
+import { MediaError, openPcmStream, openSpotifyPcmStream, type PcmStream } from "@/lib/music-bot/media";
+
+/** A fonte não entregou nenhum áudio (dá para tentar outra). */
+class NoAudioError extends MediaError {}
 
 type RtcModule = typeof import("@livekit/rtc-node");
 type AudioFrameInstance = InstanceType<RtcModule["AudioFrame"]>;
@@ -36,6 +39,10 @@ export type MusicQueueItem = {
   url: string;
   title: string;
   durationSeconds: number | null;
+  /** Busca a URL tocável só na hora (faixas de álbum/playlist do Spotify). */
+  resolveUrl?: () => Promise<string>;
+  /** Toca o áudio original do Spotify quando MUSIC_BOT_SPOTIFY_AUDIO está ligado. */
+  spotifyTrackId?: string;
   requestedBy: string;
   requestedByName: string;
 };
@@ -302,22 +309,33 @@ export class MusicPlayer {
     this.skipRequested = false;
     this.paused = false;
 
+    let spotifyFailure: string | null = null;
+
     try {
-      const stream = openPcmStream(item.url, this.config.binaries);
-      this.activeStream = stream;
+      const spotifyAudio = this.config.spotifyAudio;
 
-      const frames = await this.pump(stream.output);
-      await stream.completion;
-
-      if (frames === 0 && !this.skipRequested && !this.stopped) {
-        throw new MediaError("Não consegui reproduzir o áudio desse link.");
+      if (item.spotifyTrackId && spotifyAudio) {
+        const trackId = item.spotifyTrackId;
+        try {
+          await this.playStream(() => openSpotifyPcmStream(trackId, spotifyAudio, this.config.binaries));
+          return;
+        } catch (error) {
+          // Só cai para o YouTube se nenhum áudio saiu (senão a faixa recomeçaria do zero).
+          if (!(error instanceof NoAudioError) || !item.resolveUrl || this.skipRequested || this.stopped) throw error;
+          spotifyFailure = error.message;
+          console.warn(`[music-bot] Spotify não tocou "${item.title}" (${error.message}). Tentando o YouTube.`);
+        }
       }
 
-      if (!this.skipRequested && !this.stopped) {
-        // O buffer nativo ainda pode ter áudio: espera tocar antes de liberar a próxima faixa.
-        await this.source?.waitForPlayout();
-      }
+      const url = item.resolveUrl ? await item.resolveUrl() : item.url;
+      if (this.skipRequested || this.stopped) return;
+      await this.playStream(() => openPcmStream(url, this.config.binaries));
     } catch (error) {
+      if (spotifyFailure) {
+        // O erro do Spotify é o que importa; o do YouTube era só o plano B.
+        const fallback = error instanceof Error ? error.message : "erro inesperado";
+        error = new MediaError(`${spotifyFailure}\nPlano B pelo YouTube também falhou: ${fallback}`);
+      }
       await this.reportFailure(item, error);
     } finally {
       this.activeStream?.stop();
@@ -328,6 +346,45 @@ export class MusicPlayer {
       this.skipRequested = false;
       this.paused = false;
       this.resumeWaiters = [];
+    }
+  }
+
+  /**
+   * Toca um stream até o fim. Lança NoAudioError quando nada chegou à call, para que
+   * a faixa possa tentar outra fonte.
+   */
+  private async playStream(open: () => PcmStream): Promise<void> {
+    const stream = open();
+    this.activeStream = stream;
+
+    // Adianta a busca no YouTube da próxima faixa (álbum/playlist do Spotify) enquanto esta
+    // toca. Com o áudio direto do Spotify a busca é só plano B, então não adianta.
+    const next = this.queue.find((candidate) => candidate.id !== this.current?.id);
+    if (next && !(next.spotifyTrackId && this.config.spotifyAudio)) {
+      next.resolveUrl?.().catch(() => {});
+    }
+
+    try {
+      const frames = await this.pump(stream.output);
+
+      try {
+        await stream.completion;
+      } catch (error) {
+        if (frames === 0 && error instanceof Error) throw new NoAudioError(error.message);
+        throw error;
+      }
+
+      if (this.skipRequested || this.stopped) return;
+
+      if (frames === 0) {
+        throw new NoAudioError("Não consegui reproduzir o áudio desse link.");
+      }
+
+      // O buffer nativo ainda pode ter áudio: espera tocar antes de liberar a próxima faixa.
+      await this.source?.waitForPlayout();
+    } finally {
+      stream.stop();
+      if (this.activeStream === stream) this.activeStream = null;
     }
   }
 
